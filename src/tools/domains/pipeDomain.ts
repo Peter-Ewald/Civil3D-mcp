@@ -151,6 +151,11 @@ const PipeAddStructureArgsSchema = z.object({
   partName: z.string(),
   rimElevation: z.number().optional(),
   sumpDepth: z.number().optional(),
+  // Civil 3D's own AddStructure API has no name parameter - it always
+  // auto-assigns one from a per-drawing counter that only ever increases.
+  // When set, the plugin renames the structure immediately after creation
+  // instead of leaving callers to chase whatever name Civil 3D picked.
+  structureName: z.string().optional(),
 });
 const PipeCatalogListArgsSchema = z.object({ action: z.literal("catalog_list"), partsList: z.string().optional() });
 const PipeCalculateHglArgsSchema = z.object({
@@ -440,6 +445,7 @@ export const PIPE_DOMAIN_DEFINITION: DomainToolDefinition = {
         partName: args.partName,
         rimElevation: args.rimElevation,
         sumpDepth: args.sumpDepth,
+        structureName: args.structureName,
       })),
     },
     catalog_list: {

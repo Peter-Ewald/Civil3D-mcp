@@ -15,8 +15,28 @@ public static class PipeNetworkCommands
   {
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
     {
+      // One network throwing on some unset/quirky property (this has now
+      // happened for two different properties in a row - ReferenceSurfaceId,
+      // then StyleName) must not take the whole list down for every other
+      // network too. Guard each individually and report which one failed
+      // rather than losing the entire response.
       var networks = EnumeratePipeNetworks(civilDoc, transaction, OpenMode.ForRead)
-        .Select(network => ToPipeNetworkSummary(network, transaction))
+        .Select(network =>
+        {
+          try
+          {
+            return ToPipeNetworkSummary(network, transaction);
+          }
+          catch (Exception ex)
+          {
+            return new Dictionary<string, object?>
+            {
+              ["name"] = TryGetName(network),
+              ["handle"] = network is AcDbObject dbObject ? CivilObjectUtils.GetHandle(dbObject) : null,
+              ["error"] = $"{ex.GetType().Name}: {ex.Message}",
+            };
+          }
+        })
         .ToList();
 
       return new Dictionary<string, object?>
@@ -26,13 +46,40 @@ public static class PipeNetworkCommands
     });
   }
 
+  private static string? TryGetName(Network network)
+  {
+    try
+    {
+      return network.Name;
+    }
+    catch
+    {
+      return null;
+    }
+  }
+
   public static Task<object?> GetPipeNetworkAsync(JsonObject? parameters)
   {
     var name = PluginRuntime.GetRequiredString(parameters, "name");
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       var network = FindPipeNetworkByName(civilDoc, transaction, name, OpenMode.ForRead);
-      return ToPipeNetworkDetail(network, transaction);
+      try
+      {
+        return ToPipeNetworkDetail(network, transaction);
+      }
+      catch (Exception ex)
+      {
+        // Same reasoning as ListPipeNetworksAsync's per-network guard: report
+        // exactly which property failed instead of a bare unhandled-failure
+        // dispatch error with no detail to act on.
+        return new Dictionary<string, object?>
+        {
+          ["name"] = TryGetName(network),
+          ["handle"] = CivilObjectUtils.GetHandle(network),
+          ["error"] = $"{ex.GetType().Name}: {ex.Message}",
+        };
+      }
     });
   }
 
@@ -151,12 +198,13 @@ public static class PipeNetworkCommands
     var partName = PluginRuntime.GetRequiredString(parameters, "partName");
     var rimElevation = PluginRuntime.GetOptionalDouble(parameters, "rimElevation") ?? 0.0;
     var sumpDepth = PluginRuntime.GetOptionalDouble(parameters, "sumpDepth") ?? 0.0;
+    var structureName = PluginRuntime.GetOptionalString(parameters, "structureName");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       var network = FindPipeNetworkByName(civilDoc, transaction, networkName, OpenMode.ForWrite);
       var location = new Point3d(x, y, rimElevation);
-      var createdStructureId = AddStructureToNetwork(network, transaction, location, partName, rimElevation, sumpDepth);
+      var createdStructureId = AddStructureToNetwork(network, transaction, location, partName, rimElevation, sumpDepth, structureName);
       var structure = CivilObjectUtils.GetRequiredObject<Structure>(transaction, createdStructureId, OpenMode.ForRead);
 
       return new Dictionary<string, object?>
@@ -393,7 +441,7 @@ public static class PipeNetworkCommands
       ["handle"] = CivilObjectUtils.GetHandle(network),
       ["pipeCount"] = network.GetPipeIds().Count,
       ["structureCount"] = network.GetStructureIds().Count,
-      ["surface"] = ResolveObjectName(transaction, network.ReferenceSurfaceId),
+      ["surface"] = ResolveObjectName(transaction, GetReferenceId(() => network.ReferenceSurfaceId)),
     };
   }
 
@@ -411,12 +459,45 @@ public static class PipeNetworkCommands
       ["name"] = network.Name,
       ["handle"] = CivilObjectUtils.GetHandle(network),
       ["partsList"] = ResolveObjectName(transaction, network.PartsListId),
-      ["style"] = network.StyleName,
-      ["referenceSurface"] = ResolveObjectName(transaction, network.ReferenceSurfaceId),
-      ["referenceAlignment"] = ResolveObjectName(transaction, network.ReferenceAlignmentId),
+      ["style"] = TryGet(() => network.StyleName),
+      ["referenceSurface"] = ResolveObjectName(transaction, GetReferenceId(() => network.ReferenceSurfaceId)),
+      ["referenceAlignment"] = ResolveObjectName(transaction, GetReferenceId(() => network.ReferenceAlignmentId)),
       ["pipes"] = pipes,
       ["structures"] = structures,
     };
+  }
+
+  // Several optional/unset Network properties (confirmed so far:
+  // ReferenceSurfaceId, ReferenceAlignmentId, StyleName - found one at a time,
+  // each requiring its own rebuild-and-retest cycle) throw a native
+  // CivilException ("Retrieve attribute failed") instead of returning
+  // ObjectId.Null/null when nothing is assigned - this project's own test
+  // network never sets a style or reference surface/alignment. Route every
+  // such optional read through one of these two helpers instead of adding
+  // another one-off try/catch the next time a new property turns out to have
+  // the same quirk.
+  private static ObjectId GetReferenceId(Func<ObjectId> getter)
+  {
+    try
+    {
+      return getter();
+    }
+    catch
+    {
+      return ObjectId.Null;
+    }
+  }
+
+  private static T? TryGet<T>(Func<T?> getter)
+  {
+    try
+    {
+      return getter();
+    }
+    catch
+    {
+      return default;
+    }
   }
 
   private static Dictionary<string, object?> ToPipeData(Pipe pipe, Transaction transaction)
@@ -464,7 +545,7 @@ public static class PipeNetworkCommands
     return Network.Create((CivilDocument)civilDoc, ref requestedName);
   }
 
-  private static ObjectId AddStructureToNetwork(Network network, Transaction transaction, Point3d location, string partName, double rimElevation, double sumpDepth)
+  private static ObjectId AddStructureToNetwork(Network network, Transaction transaction, Point3d location, string partName, double rimElevation, double sumpDepth, string? structureName = null)
   {
     var part = FindPartForNetwork(network, transaction, partName, DomainType.Structure);
     var createdId = ObjectId.Null;
@@ -472,6 +553,15 @@ public static class PipeNetworkCommands
     var structure = CivilObjectUtils.GetRequiredObject<Structure>(transaction, createdId, OpenMode.ForWrite);
     structure.RimElevation = rimElevation;
     structure.RimToSumpHeight = sumpDepth;
+    // Civil 3D's AddStructure has no name parameter - it always auto-assigns
+    // from a per-drawing counter that only ever increases, so a caller has no
+    // way to know the name in advance and it drifts every time this runs
+    // against the same drawing. Rename right away when an explicit name was
+    // requested, same as any other Civil 3D object rename.
+    if (!string.IsNullOrWhiteSpace(structureName))
+    {
+      structure.Name = structureName;
+    }
     return createdId;
   }
 

@@ -179,6 +179,16 @@ public static class ProcessSupervisor
     var venvScripts = Path.Combine(workingDir, ".venv", "Scripts");
     startInfo.EnvironmentVariables["PATH"] = venvScripts + ";" + Environment.GetEnvironmentVariable("PATH");
 
+    // Python fully buffers stdout when it isn't a real console (true for a
+    // redirected, hidden child process) - print() calls sit in that buffer
+    // and may never reach the log file while the process keeps running.
+    // Without this, orchestrator.log has come back empty mid-session more
+    // than once even though the orchestrator was actively working.
+    if (hidden)
+    {
+      startInfo.EnvironmentVariables["PYTHONUNBUFFERED"] = "1";
+    }
+
     return StartAndLog(startInfo, hidden ? $"{logName}.log" : null, logName);
   }
 
