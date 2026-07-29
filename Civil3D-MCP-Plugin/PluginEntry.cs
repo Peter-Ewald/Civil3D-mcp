@@ -22,6 +22,17 @@ public sealed class PluginEntry : IExtensionApplication
       PluginLog.Error("PluginEntry", "Plugin failed to initialize", ex);
       WriteMessage($"Civil3D MCP plugin failed to initialize: {ex.Message}");
     }
+
+    try
+    {
+      var pocDir = ProcessSupervisor.ResolvePocDir();
+      ProcessSupervisor.StartAll(pocDir);
+      ApprovalRelay.Start(pocDir);
+    }
+    catch (System.Exception ex)
+    {
+      PluginLog.Error("PluginEntry", "Failed to auto-start orchestrator/bridge processes", ex);
+    }
   }
 
   public void Terminate()
@@ -34,6 +45,16 @@ public sealed class PluginEntry : IExtensionApplication
     catch (System.Exception ex)
     {
       PluginLog.Error("PluginEntry", "Error during plugin termination", ex);
+    }
+
+    try
+    {
+      ApprovalRelay.Stop();
+      ProcessSupervisor.StopAll();
+    }
+    catch (System.Exception ex)
+    {
+      PluginLog.Error("PluginEntry", "Error stopping auto-started processes", ex);
     }
   }
 

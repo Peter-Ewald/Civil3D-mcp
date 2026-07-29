@@ -306,11 +306,23 @@ public static class PipeNetworkCommands
     }
   }
 
+  // CivilObjectUtils.ToObjectIds already walks a plain IEnumerable itself (its
+  // own fallback branch for anything that isn't an ObjectIdCollection) - so
+  // this can't call that helper *and then also* walk `value` as IEnumerable
+  // again below, or every item comes out twice. This method's only reason to
+  // exist alongside that helper is the extra fallback for items that aren't a
+  // raw ObjectId but expose one via an .ObjectId/.Id property (GetAnyObjectId)
+  // - so inline the ObjectIdCollection fast path directly instead of
+  // delegating to it, and do the generic-enumerable walk exactly once.
   private static IEnumerable<ObjectId> ToObjectIdsFlexible(object? value)
   {
-    foreach (var objectId in CivilObjectUtils.ToObjectIds(value))
+    if (value is ObjectIdCollection objectIds)
     {
-      yield return objectId;
+      foreach (ObjectId objectId in objectIds)
+      {
+        yield return objectId;
+      }
+      yield break;
     }
 
     if (value is IEnumerable enumerable)
@@ -677,13 +689,25 @@ public static class PipeNetworkCommands
       yield break;
     }
 
+    // These four names are fallback candidates for the *same* logical
+    // collection across different Civil 3D API surfaces/versions - not four
+    // separate collections to union. Stop at the first one that actually
+    // resolves, or a version exposing more than one of these names (as this
+    // one does) yields every parts list twice.
     foreach (var collectionName in new[] { "PartsListSet", "PartsLists", "PartsListCollection", "PartsListStyles" })
     {
       var collection = GetNamedMemberValue(styles, collectionName) ?? GetNamedMemberValue(civilDoc, collectionName);
+      if (collection == null)
+      {
+        continue;
+      }
+
       foreach (var objectId in ToObjectIdsFlexible(collection))
       {
         yield return transaction.GetObject(objectId, OpenMode.ForRead)!;
       }
+
+      yield break;
     }
   }
 

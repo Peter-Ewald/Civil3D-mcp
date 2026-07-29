@@ -1162,7 +1162,7 @@ public static class QcCommands
             layerChanges["colorIndex"] = colorIndex.Value;
             if (!dryRun)
             {
-              layer.Color = Color.FromColorIndex(ColorMethod.ByAci, (short)colorIndex.Value);
+              layer.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(ColorMethod.ByAci, (short)colorIndex.Value);
             }
           }
 
