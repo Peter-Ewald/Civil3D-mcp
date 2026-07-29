@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Reflection;
 
 namespace Civil3DMcpPlugin;
@@ -360,8 +361,39 @@ internal static class Civil3DCompatibility
     return PropertyCache.GetOrAdd(key, static item =>
     {
       var flags = BindingFlags.Public | (item.IsStatic ? BindingFlags.Static : BindingFlags.Instance);
-      return new CachedProperty(item.Type.GetProperty(item.Name, flags));
+      try
+      {
+        return new CachedProperty(item.Type.GetProperty(item.Name, flags));
+      }
+      catch (AmbiguousMatchException)
+      {
+        // Some Civil 3D types (e.g. PartsList) declare the same property name at
+        // more than one level of the hierarchy (StyleBase and DBObject both
+        // declare "Name"). Prefer whichever declaration sits closest to the
+        // runtime type instead of failing the lookup entirely.
+        var mostDerived = item.Type.GetProperties(flags)
+          .Where(p => p.Name == item.Name)
+          .OrderBy(p => DistanceFromType(item.Type, p.DeclaringType!))
+          .FirstOrDefault();
+        return new CachedProperty(mostDerived);
+      }
     }).Value;
+  }
+
+  private static int DistanceFromType(Type from, Type to)
+  {
+    var distance = 0;
+    for (var current = from; current != null; current = current.BaseType)
+    {
+      if (current == to)
+      {
+        return distance;
+      }
+
+      distance++;
+    }
+
+    return int.MaxValue;
   }
 
   private static bool TryInvokeCandidates(

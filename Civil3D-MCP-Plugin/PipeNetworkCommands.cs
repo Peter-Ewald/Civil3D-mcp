@@ -246,12 +246,12 @@ public static class PipeNetworkCommands
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       var partsLists = EnumeratePartsLists(civilDoc, transaction)
-        .Where(partsList => string.IsNullOrWhiteSpace(partsListName) || string.Equals(CivilObjectUtils.GetName(partsList), partsListName, StringComparison.OrdinalIgnoreCase))
+        .Where(partsList => string.IsNullOrWhiteSpace(partsListName) || string.Equals(GetPartsListName(partsList), partsListName, StringComparison.OrdinalIgnoreCase))
         .Select(partsList => new Dictionary<string, object?>
         {
-          ["name"] = CivilObjectUtils.GetName(partsList),
-        ["handle"] = partsList is AcDbObject dbObject ? CivilObjectUtils.GetHandle(dbObject) : null,
-          ["parts"] = EnumeratePartNames(partsList).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(name => name).ToList(),
+          ["name"] = GetPartsListName(partsList),
+          ["handle"] = partsList is AcDbObject dbObject ? CivilObjectUtils.GetHandle(dbObject) : null,
+          ["parts"] = EnumeratePartNames(partsList, transaction).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(name => name).ToList(),
         })
         .ToList();
 
@@ -647,13 +647,26 @@ public static class PipeNetworkCommands
   {
     foreach (var partsList in EnumeratePartsLists(civilDoc, transaction))
     {
-      if (string.Equals(CivilObjectUtils.GetName(partsList), partsListName, StringComparison.OrdinalIgnoreCase) && partsList is AcDbObject dbObject)
+      if (string.Equals(GetPartsListName(partsList), partsListName, StringComparison.OrdinalIgnoreCase) && partsList is AcDbObject dbObject)
       {
         return dbObject.ObjectId;
       }
     }
 
     throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Parts list '{partsListName}' was not found.");
+  }
+
+  // PartsList.Name is a documented, stable Autodesk API member (confirmed via
+  // reflection against the real AeccDbMgd.dll), but Civil3DCompatibility's
+  // generic PropertyInfo.GetValue()-based lookup throws "Property Get method
+  // was not found" for it - a known limitation of reflecting over certain
+  // C++/CLI-emitted properties on Autodesk's managed API. Access it directly
+  // with a strong-typed cast instead, per this file's own documented
+  // convention of calling documented members directly rather than through the
+  // generic reflection compatibility layer (see Civil3DCompatibility.cs).
+  private static string? GetPartsListName(object value)
+  {
+    return value is PartsList partsList ? partsList.Name : CivilObjectUtils.GetName(value);
   }
 
   private static IEnumerable<object> EnumeratePartsLists(object civilDoc, Transaction transaction)
@@ -674,11 +687,37 @@ public static class PipeNetworkCommands
     }
   }
 
-  private static IEnumerable<string> EnumeratePartNames(object partsList)
+  private static IEnumerable<string> EnumeratePartNames(object partsListObject, Transaction transaction)
   {
+    // Same reflection limitation as GetPartsListName above: PartFamilyCount,
+    // the int indexer, and PartFamily.Name are all documented, stable members -
+    // access them directly with strong-typed casts rather than through
+    // Civil3DCompatibility's generic reflection helpers.
+    if (partsListObject is PartsList partsList)
+    {
+      for (var i = 0; i < partsList.PartFamilyCount; i++)
+      {
+        var familyId = partsList[i];
+        if (familyId.IsNull)
+        {
+          continue;
+        }
+
+        if (transaction.GetObject(familyId, OpenMode.ForRead) is PartFamily family
+          && !string.IsNullOrWhiteSpace(family.Name))
+        {
+          yield return family.Name;
+        }
+      }
+
+      yield break;
+    }
+
+    // Fallback for any other object shape that does expose a named collection
+    // (e.g. a different Civil 3D host version than the one this was verified against).
     foreach (var collectionName in new[] { "PartFamilies", "PipeFamilies", "StructureFamilies", "PartFamilySet" })
     {
-      var collection = GetNamedMemberValue(partsList, collectionName);
+      var collection = GetNamedMemberValue(partsListObject, collectionName);
       foreach (var item in EnumerateNamedObjects(collection))
       {
         var familyName = CivilObjectUtils.GetName(item);
