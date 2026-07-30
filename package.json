@@ -15,6 +15,8 @@
     "prebuild": "npm run clean",
     "build": "tsc && node ./scripts/copy-static-assets.mjs",
     "start": "node ./build/index.js",
+    "bundle:cjs": "esbuild build/index.js --bundle --platform=node --target=node18 --format=cjs --outfile=dist-bundle/bundle.cjs",
+    "package": "npm run build && npm run bundle:cjs && pkg dist-bundle/bundle.cjs --targets node18-win-x64 --output dist-bundle/civil3d-mcp-bridge.exe",
     "test": "vitest run",
     "test:p2-boundaries": "dotnet run --project ./tests/FileBoundaryHarness/FileBoundaryHarness.csproj",
     "test:watch": "vitest",
@@ -57,6 +59,8 @@
   "devDependencies": {
     "@anthropic-ai/mcpb": "^2.1.2",
     "@types/node": "^22.13.10",
+    "@yao-pkg/pkg": "^5.16.1",
+    "esbuild": "^0.24.2",
     "rimraf": "^5.0.10",
     "typescript": "^5.8.2",
     "vitest": "^4.1.0"

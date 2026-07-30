@@ -20,6 +20,18 @@ interface VideoSearchDocument extends HelpVideoRef {
   searchText: string;
 }
 
+// import.meta.url is empty under esbuild's CJS output format (the shape the
+// bundled build compiles to), which makes the URL constructor throw - caught
+// here so fromDefaultFile()'s other candidates (CIVIL3D_VIDEO_CATALOG, the
+// cwd-relative fallback) still get a chance.
+function moduleRelativeCatalogPath(): string | null {
+  try {
+    return fileURLToPath(new URL("./data/autodesk_videos.json", import.meta.url));
+  } catch {
+    return null;
+  }
+}
+
 export class AutodeskVideoCatalog {
   private readonly byId: Map<string, HelpVideoRef>;
   private readonly searchIndex: MiniSearch<VideoSearchDocument>;
@@ -42,7 +54,7 @@ export class AutodeskVideoCatalog {
     const configuredPath = process.env.CIVIL3D_VIDEO_CATALOG;
     const candidates = [
       configuredPath,
-      fileURLToPath(new URL("./data/autodesk_videos.json", import.meta.url)),
+      moduleRelativeCatalogPath(),
       path.resolve(process.cwd(), "autodesk_videos.json"),
     ].filter((candidate): candidate is string => Boolean(candidate));
     const catalogPath = candidates.find((candidate) => fs.existsSync(candidate));

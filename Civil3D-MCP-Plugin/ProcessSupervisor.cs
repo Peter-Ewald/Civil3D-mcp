@@ -23,6 +23,15 @@ public static class ProcessSupervisor
   private static Process? _chatProcess;
   private static bool _started;
 
+  // Bundled (@yao-pkg/pkg + PyInstaller) executables are the real deployment
+  // target - no Node/Python install required on the engineer's machine. Set
+  // to "1" only for active development: rebuilding both bundles from scratch
+  // on every code change would wreck the fast dotnet-build/npm-run-build dev
+  // loop, so this keeps the original venv/node spawning path available
+  // side-by-side rather than deleting it.
+  private static bool DevMode =>
+    Environment.GetEnvironmentVariable("CIVIL3D_MCP_DEV_MODE") == "1";
+
   // AppContext.BaseDirectory resolves to the *host process's* base directory
   // (acad.exe's own install folder) for a plugin loaded via NETLOAD, not this
   // assembly's own location - a classic hosted-plugin gotcha. Assembly.Location
@@ -58,8 +67,8 @@ public static class ProcessSupervisor
         _nodeProcess = StartNodeBridge(submoduleRoot);
       }
 
-      _orchestratorProcess = StartPython(Path.Combine(pocDir, "orchestrator"), "local_orchestrator.py", hidden: true, "orchestrator");
-      _chatProcess = StartPython(Path.Combine(pocDir, "chat"), "chat_client.py", hidden: false, "chat");
+      _orchestratorProcess = StartPythonComponent(Path.Combine(pocDir, "orchestrator"), "local_orchestrator", hidden: true, "orchestrator");
+      _chatProcess = StartPythonComponent(Path.Combine(pocDir, "chat"), "chat_client", hidden: false, "chat");
 
       _started = true;
     }
@@ -131,59 +140,108 @@ public static class ProcessSupervisor
       return null;
     }
 
-    var startInfo = new ProcessStartInfo
+    ProcessStartInfo startInfo;
+    if (DevMode)
     {
-      FileName = "node",
-      Arguments = "build/index.js",
-      WorkingDirectory = submoduleRoot,
-      UseShellExecute = false,
-      CreateNoWindow = true,
-      WindowStyle = ProcessWindowStyle.Hidden,
-      RedirectStandardOutput = true,
-      RedirectStandardError = true,
-    };
+      startInfo = new ProcessStartInfo
+      {
+        FileName = "node",
+        Arguments = "build/index.js",
+        WorkingDirectory = submoduleRoot,
+      };
+    }
+    else
+    {
+      // Produced by `npm run package` (esbuild -> @yao-pkg/pkg; see
+      // package.json) - a single exe with the Node runtime embedded, no
+      // separate node/node_modules install needed on this machine.
+      var exePath = Path.Combine(submoduleRoot, "dist-bundle", "civil3d-mcp-bridge.exe");
+      if (!File.Exists(exePath))
+      {
+        PluginLog.Warn(
+          "ProcessSupervisor",
+          $"NodeServer: bundled exe not found at {exePath} (run `npm run package`, or set " +
+          "CIVIL3D_MCP_DEV_MODE=1 for the dev venv/node loop); skipping.");
+        return null;
+      }
+
+      startInfo = new ProcessStartInfo { FileName = exePath, WorkingDirectory = submoduleRoot };
+    }
+
+    startInfo.UseShellExecute = false;
+    startInfo.CreateNoWindow = true;
+    startInfo.WindowStyle = ProcessWindowStyle.Hidden;
+    startInfo.RedirectStandardOutput = true;
+    startInfo.RedirectStandardError = true;
 
     return StartAndLog(startInfo, "node.log", "NodeServer");
   }
 
-  private static Process? StartPython(string workingDir, string scriptFileName, bool hidden, string logName)
+  private static Process? StartPythonComponent(string workingDir, string componentName, bool hidden, string logName)
   {
-    // pythonw.exe (not python.exe) for anything not hidden - it's the
-    // windowless CPython launcher meant for GUI apps like tkinter. Using
-    // python.exe here allocates a console window whose lifetime is tied to
-    // the GUI process, so closing that "extra" window kills chat too.
-    var executableName = hidden ? "python.exe" : "pythonw.exe";
-    var venvPython = Path.Combine(workingDir, ".venv", "Scripts", executableName);
-    if (!File.Exists(venvPython))
+    ProcessStartInfo startInfo;
+
+    if (DevMode)
     {
-      PluginLog.Warn("ProcessSupervisor", $"{logName}: venv python not found at {venvPython}; skipping.");
-      return null;
+      // pythonw.exe (not python.exe) for anything not hidden - it's the
+      // windowless CPython launcher meant for GUI apps like tkinter. Using
+      // python.exe here allocates a console window whose lifetime is tied to
+      // the GUI process, so closing that "extra" window kills chat too.
+      var executableName = hidden ? "python.exe" : "pythonw.exe";
+      var venvPython = Path.Combine(workingDir, ".venv", "Scripts", executableName);
+      if (!File.Exists(venvPython))
+      {
+        PluginLog.Warn("ProcessSupervisor", $"{logName}: venv python not found at {venvPython}; skipping.");
+        return null;
+      }
+
+      startInfo = new ProcessStartInfo
+      {
+        FileName = venvPython,
+        Arguments = $"\"{componentName}.py\"",
+        WorkingDirectory = workingDir,
+      };
+
+      // No longer needed for az (DirectAzureCliCredential calls the azure-cli
+      // Python package directly, bypassing az.bat entirely - see
+      // azure_cli_direct_credential.py), but harmless and keeps this venv's own
+      // Scripts folder generally preferred over anything else on PATH.
+      var venvScripts = Path.Combine(workingDir, ".venv", "Scripts");
+      startInfo.EnvironmentVariables["PATH"] = venvScripts + ";" + Environment.GetEnvironmentVariable("PATH");
+    }
+    else
+    {
+      // PyInstaller onedir output: <workingDir>/dist/<componentName>/<componentName>.exe.
+      // Onedir over onefile - no runtime self-extraction step to fail or add
+      // startup latency, which matters since this process is started hidden
+      // and polled for readiness. Chat's build uses --windowed, so it never
+      // allocates a console in the first place - no pythonw.exe-style
+      // distinction needed for the bundled path.
+      var exePath = Path.Combine(workingDir, "dist", componentName, $"{componentName}.exe");
+      if (!File.Exists(exePath))
+      {
+        PluginLog.Warn(
+          "ProcessSupervisor",
+          $"{logName}: bundled exe not found at {exePath} (run PyInstaller, or set " +
+          "CIVIL3D_MCP_DEV_MODE=1 for the dev venv loop); skipping.");
+        return null;
+      }
+
+      startInfo = new ProcessStartInfo { FileName = exePath, WorkingDirectory = workingDir };
     }
 
-    var startInfo = new ProcessStartInfo
-    {
-      FileName = venvPython,
-      Arguments = $"\"{scriptFileName}\"",
-      WorkingDirectory = workingDir,
-      UseShellExecute = false,
-      CreateNoWindow = hidden,
-      WindowStyle = hidden ? ProcessWindowStyle.Hidden : ProcessWindowStyle.Normal,
-      RedirectStandardOutput = hidden,
-      RedirectStandardError = hidden,
-    };
-
-    // No longer needed for az (DirectAzureCliCredential calls the azure-cli
-    // Python package directly, bypassing az.bat entirely - see
-    // azure_cli_direct_credential.py), but harmless and keeps this venv's own
-    // Scripts folder generally preferred over anything else on PATH.
-    var venvScripts = Path.Combine(workingDir, ".venv", "Scripts");
-    startInfo.EnvironmentVariables["PATH"] = venvScripts + ";" + Environment.GetEnvironmentVariable("PATH");
+    startInfo.UseShellExecute = false;
+    startInfo.CreateNoWindow = hidden;
+    startInfo.WindowStyle = hidden ? ProcessWindowStyle.Hidden : ProcessWindowStyle.Normal;
+    startInfo.RedirectStandardOutput = hidden;
+    startInfo.RedirectStandardError = hidden;
 
     // Python fully buffers stdout when it isn't a real console (true for a
-    // redirected, hidden child process) - print() calls sit in that buffer
-    // and may never reach the log file while the process keeps running.
-    // Without this, orchestrator.log has come back empty mid-session more
-    // than once even though the orchestrator was actively working.
+    // redirected, hidden child process, whether it's a venv interpreter or a
+    // PyInstaller-bundled one) - print() calls sit in that buffer and may
+    // never reach the log file while the process keeps running. Without
+    // this, orchestrator.log has come back empty mid-session more than once
+    // even though the orchestrator was actively working.
     if (hidden)
     {
       startInfo.EnvironmentVariables["PYTHONUNBUFFERED"] = "1";

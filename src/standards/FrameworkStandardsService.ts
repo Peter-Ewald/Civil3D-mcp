@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,11 +54,24 @@ const TOPIC_ALIASES: Record<string, string[]> = {
 let cachedRulesPromise: Promise<FrameworkPromptRule[]> | null = null;
 
 function getPromptRulesPath(): string {
-  const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
-  return path.resolve(
-    currentDirectory,
-    "../standards/data/civil3d_framework_rules.json"
-  );
+  // import.meta.url is empty under esbuild's CJS output format (the shape the
+  // bundled build compiles to), which makes fileURLToPath throw - caught here
+  // so the cwd-relative fallback (the submodule root - see
+  // ProcessSupervisor.cs, where build/standards/data still exists on disk)
+  // still gets a chance.
+  try {
+    const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
+    const relativeToModule = path.resolve(
+      currentDirectory,
+      "../standards/data/civil3d_framework_rules.json"
+    );
+    if (existsSync(relativeToModule)) {
+      return relativeToModule;
+    }
+  } catch {
+    // fall through to the cwd-relative candidate below
+  }
+  return path.resolve(process.cwd(), "build/standards/data/civil3d_framework_rules.json");
 }
 
 async function loadPromptRules(): Promise<FrameworkPromptRule[]> {
