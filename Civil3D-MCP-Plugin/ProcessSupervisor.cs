@@ -174,6 +174,17 @@ public static class ProcessSupervisor
     startInfo.RedirectStandardOutput = true;
     startInfo.RedirectStandardError = true;
 
+    // The bridge's own default (Civil3D-mcp's ConnectionManager.ts) connects
+    // to the plugin's TCP listener at "localhost", which Node/Windows can
+    // resolve to the IPv6 loopback (::1) first - but RpcTcpServer.cs binds
+    // only to IPAddress.Loopback (127.0.0.1), so that resolution produces a
+    // silent, intermittent ECONNREFUSED ::1:8080 with nothing else wrong:
+    // C3DMCPSTATUS reports the plugin as running (checked in-process, no
+    // socket involved) while the bridge simply can't reach it. Pin the host
+    // explicitly so this never depends on how "localhost" happens to
+    // resolve on a given run.
+    startInfo.EnvironmentVariables["CIVIL3D_HOST"] = "127.0.0.1";
+
     return StartAndLog(startInfo, "node.log", "NodeServer");
   }
 
