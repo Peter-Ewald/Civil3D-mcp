@@ -54,6 +54,19 @@ public static class AlignmentCommands
         .Select(id => CivilObjectUtils.GetRequiredObject<Profile>(transaction, id, OpenMode.ForRead).Name)
         .ToList();
 
+      // Found live: this "get" returned no horizontal coordinates at all -
+      // only station-range metadata - unlike every other object type's own
+      // "get" (structures, pipes, etc. all return real x/y). An agent that
+      // called "get" expecting geometry (it did, passing report-shaped
+      // interval/maximumSamples params that "get" ignores) got nothing back
+      // and, rather than flagging the gap, improvised obstacle coordinates
+      // from an unrelated Profile's station/elevation values - a real
+      // silent-failure trap. Adding the alignment's own start/end points
+      // here closes the most common case without requiring "report".
+      double startX = 0, startY = 0, endX = 0, endY = 0;
+      alignment.PointLocation(alignment.StartingStation, 0, ref startX, ref startY);
+      alignment.PointLocation(alignment.EndingStation, 0, ref endX, ref endY);
+
       return new Dictionary<string, object?>
       {
         ["name"] = alignment.Name,
@@ -64,6 +77,8 @@ public static class AlignmentCommands
         ["length"] = alignment.Length,
         ["startStation"] = alignment.StartingStation,
         ["endStation"] = alignment.EndingStation,
+        ["startPoint"] = new Dictionary<string, object?> { ["x"] = startX, ["y"] = startY },
+        ["endPoint"] = new Dictionary<string, object?> { ["x"] = endX, ["y"] = endY },
         ["entityCount"] = entities.Count,
         ["entities"] = entities,
         ["dependentProfiles"] = dependentProfiles,

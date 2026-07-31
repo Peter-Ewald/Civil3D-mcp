@@ -33,6 +33,8 @@ const AlignmentEntitySchema = z.object({
   length: z.number(),
 });
 
+const AlignmentPointSchema = z.object({ x: z.number(), y: z.number() });
+
 const AlignmentDetailResponseSchema = z.object({
   name: z.string(),
   handle: z.string(),
@@ -42,6 +44,13 @@ const AlignmentDetailResponseSchema = z.object({
   length: z.number(),
   startStation: z.number(),
   endStation: z.number(),
+  // The alignment's own real start/end coordinates - found live to be
+  // missing entirely (unlike every other object type's own "get"), which let
+  // an agent silently substitute an unrelated Profile's station/elevation
+  // values as if they were x/y/z when it called the wrong action for real
+  // geometry. Always present now so there's no gap to fall back from.
+  startPoint: AlignmentPointSchema,
+  endPoint: AlignmentPointSchema,
   entityCount: z.number(),
   entities: z.array(AlignmentEntitySchema),
   dependentProfiles: z.array(z.string()),
