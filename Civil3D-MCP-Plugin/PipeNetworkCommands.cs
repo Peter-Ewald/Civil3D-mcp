@@ -209,6 +209,7 @@ public static class PipeNetworkCommands
     var sumpDepth = PluginRuntime.GetOptionalDouble(parameters, "sumpDepth") ?? 0.0;
     var structureName = PluginRuntime.GetOptionalString(parameters, "structureName");
     var colorIndex = PluginRuntime.GetOptionalInt(parameters, "colorIndex");
+    var rotationDegrees = PluginRuntime.GetOptionalDouble(parameters, "rotationDegrees");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
@@ -217,6 +218,7 @@ public static class PipeNetworkCommands
       var createdStructureId = AddStructureToNetwork(network, transaction, location, partName, rimElevation, sumpDepth, structureName);
       var structure = CivilObjectUtils.GetRequiredObject<Structure>(transaction, createdStructureId, OpenMode.ForWrite);
       CivilObjectUtils.ApplyColorIndex(structure, colorIndex);
+      CivilObjectUtils.ApplyRotationDegrees(structure, rotationDegrees);
 
       return new Dictionary<string, object?>
       {

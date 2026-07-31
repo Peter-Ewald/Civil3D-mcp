@@ -162,6 +162,11 @@ const PipeAddStructureArgsSchema = z.object({
   // AutoCAD Color Index (1-255), applied directly on the structure entity,
   // overriding ByLayer - a demo/visualization aid, no engineering meaning.
   colorIndex: z.number().int().min(1).max(255).optional(),
+  // Structure.Rotation (degrees, CCW from +X), orienting the inserted part
+  // in plan - unlike colorIndex this is not overridden by the Style, so it
+  // has a real visual effect. Left unset, new structures default to 0
+  // regardless of which way their connected pipes actually run.
+  rotationDegrees: z.number().optional(),
 });
 const PipeCatalogListArgsSchema = z.object({ action: z.literal("catalog_list"), partsList: z.string().optional() });
 const PipeCalculateHglArgsSchema = z.object({
@@ -454,6 +459,7 @@ export const PIPE_DOMAIN_DEFINITION: DomainToolDefinition = {
         sumpDepth: args.sumpDepth,
         structureName: args.structureName,
         colorIndex: args.colorIndex,
+        rotationDegrees: args.rotationDegrees,
       })),
     },
     catalog_list: {

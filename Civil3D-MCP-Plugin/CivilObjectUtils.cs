@@ -30,6 +30,19 @@ public static class CivilObjectUtils
     }
   }
 
+  // Structure.Rotation (radians, CCW from the WCS +X axis) orients the
+  // structure's inserted part in plan - unlike color, it isn't overridden by
+  // the assigned Style, so this actually has a visible effect. Left unset,
+  // new structures default to rotation 0 regardless of which way their
+  // connected pipes run.
+  public static void ApplyRotationDegrees(AcDbObject structure, double? rotationDegrees)
+  {
+    if (rotationDegrees is double degrees)
+    {
+      Civil3DCompatibility.TrySetProperty(structure, "Rotation", degrees * Math.PI / 180.0);
+    }
+  }
+
   public static string? GetName(object? value)
   {
     if (value == null)
