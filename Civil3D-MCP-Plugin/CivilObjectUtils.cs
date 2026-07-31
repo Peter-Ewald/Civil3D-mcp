@@ -14,6 +14,22 @@ public static class CivilObjectUtils
     return dbObject.Handle.ToString();
   }
 
+  // AutoCAD Color Index (1-255; 1=red, 2=yellow, 3=green, etc.) applied
+  // directly on the entity, overriding ByLayer - a demo/visualization aid
+  // (distinguishing existing-vs-new, obstacle-vs-endpoint geometry in
+  // recordings) with no bearing on any object's own engineering data. Only
+  // effective on plain AutoCAD entities (Polyline3d, Circle, etc.) - Civil 3D
+  // parts (Structure, Pipe) render through an assigned Style whose display
+  // components can hardcode their own color, silently overriding this (found
+  // live: this had no visible effect on pipe network structures/pipes at all).
+  public static void ApplyColorIndex(Autodesk.AutoCAD.DatabaseServices.Entity entity, int? colorIndex)
+  {
+    if (colorIndex is int index)
+    {
+      entity.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, (short)index);
+    }
+  }
+
   public static string? GetName(object? value)
   {
     if (value == null)

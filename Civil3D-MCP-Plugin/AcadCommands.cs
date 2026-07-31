@@ -17,6 +17,7 @@ public static class AcadCommands
 
     var closed = PluginRuntime.GetOptionalInt(parameters, "closed") == 1;
     var layerName = PluginRuntime.GetOptionalString(parameters, "layer");
+    var colorIndex = PluginRuntime.GetOptionalInt(parameters, "colorIndex");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
@@ -43,6 +44,7 @@ public static class AcadCommands
         var layerId = LookupUtils.GetLayerId(database, transaction, layerName);
         polyline.LayerId = layerId;
       }
+      CivilObjectUtils.ApplyColorIndex(polyline, colorIndex);
 
       var polylineId = modelSpace.AppendEntity(polyline);
       transaction.AddNewlyCreatedDBObject(polyline, true);
@@ -117,6 +119,7 @@ public static class AcadCommands
 
     var closed = PluginRuntime.GetOptionalInt(parameters, "closed") == 1;
     var layerName = PluginRuntime.GetOptionalString(parameters, "layer");
+    var colorIndex = PluginRuntime.GetOptionalInt(parameters, "colorIndex");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
@@ -149,6 +152,7 @@ public static class AcadCommands
         var layerId = LookupUtils.GetLayerId(database, transaction, layerName);
         polyline3d.LayerId = layerId;
       }
+      CivilObjectUtils.ApplyColorIndex(polyline3d, colorIndex);
 
       var polylineId = modelSpace.AppendEntity(polyline3d);
       transaction.AddNewlyCreatedDBObject(polyline3d, true);

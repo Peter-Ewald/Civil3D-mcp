@@ -190,17 +190,14 @@ public static class PipeNetworkCommands
     });
   }
 
-  // AutoCAD Color Index (1-255; 1=red, 2=yellow, 3=green, etc.) applied
-  // directly on the entity, overriding ByLayer - a demo/visualization aid
-  // (distinguishing existing-vs-new, obstacle-vs-endpoint geometry in
-  // recordings) with no bearing on the pipe network's own engineering data.
-  private static void ApplyColorIndex(Autodesk.AutoCAD.DatabaseServices.Entity entity, int? colorIndex)
-  {
-    if (colorIndex is int index)
-    {
-      entity.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, (short)index);
-    }
-  }
+  // NOTE: confirmed live to have no visible effect - Structure/Pipe parts
+  // render through an assigned Style whose display components hardcode
+  // their own color (e.g. "Blue" for the 3D Solid and Structure Hatch
+  // components), which silently overrides this. Left in place since it's
+  // harmless and the parameter is still accepted, but demo coloring for
+  // pipe network parts is done via separate plain-entity markers instead
+  // (a small closed create3dPolyline at each structure, a duplicate
+  // create3dPolyline along each pipe - see AcadCommands.cs's colorIndex).
 
   public static Task<object?> AddStructureToNetworkAsync(JsonObject? parameters)
   {
@@ -219,7 +216,7 @@ public static class PipeNetworkCommands
       var location = new Point3d(x, y, rimElevation);
       var createdStructureId = AddStructureToNetwork(network, transaction, location, partName, rimElevation, sumpDepth, structureName);
       var structure = CivilObjectUtils.GetRequiredObject<Structure>(transaction, createdStructureId, OpenMode.ForWrite);
-      ApplyColorIndex(structure, colorIndex);
+      CivilObjectUtils.ApplyColorIndex(structure, colorIndex);
 
       return new Dictionary<string, object?>
       {
@@ -253,7 +250,7 @@ public static class PipeNetworkCommands
       var endPoint = ReadPoint(parameters, "endPoint");
       var createdPipeId = AddPipeToNetwork(network, transaction, partName, diameter, startPoint, endPoint, startStructureId, endStructureId);
       var pipe = CivilObjectUtils.GetRequiredObject<Pipe>(transaction, createdPipeId, OpenMode.ForWrite);
-      ApplyColorIndex(pipe, colorIndex);
+      CivilObjectUtils.ApplyColorIndex(pipe, colorIndex);
 
       return new Dictionary<string, object?>
       {
