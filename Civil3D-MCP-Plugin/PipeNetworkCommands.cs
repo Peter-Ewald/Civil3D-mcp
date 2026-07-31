@@ -190,6 +190,18 @@ public static class PipeNetworkCommands
     });
   }
 
+  // AutoCAD Color Index (1-255; 1=red, 2=yellow, 3=green, etc.) applied
+  // directly on the entity, overriding ByLayer - a demo/visualization aid
+  // (distinguishing existing-vs-new, obstacle-vs-endpoint geometry in
+  // recordings) with no bearing on the pipe network's own engineering data.
+  private static void ApplyColorIndex(Autodesk.AutoCAD.DatabaseServices.Entity entity, int? colorIndex)
+  {
+    if (colorIndex is int index)
+    {
+      entity.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, (short)index);
+    }
+  }
+
   public static Task<object?> AddStructureToNetworkAsync(JsonObject? parameters)
   {
     var networkName = PluginRuntime.GetRequiredString(parameters, "networkName");
@@ -199,13 +211,15 @@ public static class PipeNetworkCommands
     var rimElevation = PluginRuntime.GetOptionalDouble(parameters, "rimElevation") ?? 0.0;
     var sumpDepth = PluginRuntime.GetOptionalDouble(parameters, "sumpDepth") ?? 0.0;
     var structureName = PluginRuntime.GetOptionalString(parameters, "structureName");
+    var colorIndex = PluginRuntime.GetOptionalInt(parameters, "colorIndex");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       var network = FindPipeNetworkByName(civilDoc, transaction, networkName, OpenMode.ForWrite);
       var location = new Point3d(x, y, rimElevation);
       var createdStructureId = AddStructureToNetwork(network, transaction, location, partName, rimElevation, sumpDepth, structureName);
-      var structure = CivilObjectUtils.GetRequiredObject<Structure>(transaction, createdStructureId, OpenMode.ForRead);
+      var structure = CivilObjectUtils.GetRequiredObject<Structure>(transaction, createdStructureId, OpenMode.ForWrite);
+      ApplyColorIndex(structure, colorIndex);
 
       return new Dictionary<string, object?>
       {
@@ -221,6 +235,7 @@ public static class PipeNetworkCommands
     var networkName = PluginRuntime.GetRequiredString(parameters, "networkName");
     var partName = PluginRuntime.GetRequiredString(parameters, "partName");
     var diameter = PluginRuntime.GetOptionalDouble(parameters, "diameter");
+    var colorIndex = PluginRuntime.GetOptionalInt(parameters, "colorIndex");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
@@ -237,7 +252,8 @@ public static class PipeNetworkCommands
       var startPoint = ReadPoint(parameters, "startPoint");
       var endPoint = ReadPoint(parameters, "endPoint");
       var createdPipeId = AddPipeToNetwork(network, transaction, partName, diameter, startPoint, endPoint, startStructureId, endStructureId);
-      var pipe = CivilObjectUtils.GetRequiredObject<Pipe>(transaction, createdPipeId, OpenMode.ForRead);
+      var pipe = CivilObjectUtils.GetRequiredObject<Pipe>(transaction, createdPipeId, OpenMode.ForWrite);
+      ApplyColorIndex(pipe, colorIndex);
 
       return new Dictionary<string, object?>
       {

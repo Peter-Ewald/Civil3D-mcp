@@ -135,6 +135,9 @@ const PipeAddPipeArgsSchema = z.object({
   endStructure: z.string().optional(),
   partName: z.string(),
   diameter: z.number().optional(),
+  // AutoCAD Color Index (1-255), applied directly on the pipe entity,
+  // overriding ByLayer - a demo/visualization aid, no engineering meaning.
+  colorIndex: z.number().int().min(1).max(255).optional(),
 }).superRefine((value, ctx) => {
   if (!value.startPoint && !value.startStructure) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Either startPoint or startStructure is required.", path: ["startPoint"] });
@@ -156,6 +159,9 @@ const PipeAddStructureArgsSchema = z.object({
   // When set, the plugin renames the structure immediately after creation
   // instead of leaving callers to chase whatever name Civil 3D picked.
   structureName: z.string().optional(),
+  // AutoCAD Color Index (1-255), applied directly on the structure entity,
+  // overriding ByLayer - a demo/visualization aid, no engineering meaning.
+  colorIndex: z.number().int().min(1).max(255).optional(),
 });
 const PipeCatalogListArgsSchema = z.object({ action: z.literal("catalog_list"), partsList: z.string().optional() });
 const PipeCalculateHglArgsSchema = z.object({
@@ -428,6 +434,7 @@ export const PIPE_DOMAIN_DEFINITION: DomainToolDefinition = {
         endStructure: args.endStructure,
         partName: args.partName,
         diameter: args.diameter,
+        colorIndex: args.colorIndex,
       })),
     },
     add_structure: {
@@ -446,6 +453,7 @@ export const PIPE_DOMAIN_DEFINITION: DomainToolDefinition = {
         rimElevation: args.rimElevation,
         sumpDepth: args.sumpDepth,
         structureName: args.structureName,
+        colorIndex: args.colorIndex,
       })),
     },
     catalog_list: {
