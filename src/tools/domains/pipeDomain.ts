@@ -518,7 +518,19 @@ export const PIPE_DOMAIN_DEFINITION: DomainToolDefinition = {
         if (!partsListName) throw new Error("No parts list was provided and the pipe network does not expose one.");
 
         const catalog = await appClient.sendCommand("listPipePartsCatalog", { partsList: partsListName }) as PartsCatalogResponse;
-        const parts = catalog.partsLists.find((item) => item.name === partsListName)?.parts ?? [];
+        const allParts = catalog.partsLists.find((item) => item.name === partsListName)?.parts ?? [];
+        // listPipePartsCatalog mixes pipe and structure part families in one
+        // flat list (no domain separation exposed). chooseBestPart below
+        // parses a diameter out of the family name text, and structure
+        // family names sometimes embed an incidental digit (e.g. "...2-Tier
+        // Rectangular Frame SI") that parses as a plausible-looking
+        // diameter - found live selecting a structure part as a pipe size.
+        // Filtering these out doesn't make name-based diameter parsing
+        // correct (most real pipe family names, e.g. "PVC Pipe SI", have no
+        // digit at all and still won't parse - a deeper gap needing real
+        // per-size catalog data this tool doesn't have), but it turns a
+        // wrong answer into an honest "couldn't parse a size" skip instead.
+        const parts = allParts.filter((name) => !/structure/i.test(name));
         if (parts.length === 0) throw new Error(`Parts list '${partsListName}' does not contain any pipe parts.`);
 
         const perPipeDesignFlows = (args.perPipeDesignFlows ?? []) as Array<z.infer<typeof PipeFlowSchema>>;
