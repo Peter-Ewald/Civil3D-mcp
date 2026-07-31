@@ -218,13 +218,14 @@ public static class PipeNetworkCommands
       var createdStructureId = AddStructureToNetwork(network, transaction, location, partName, rimElevation, sumpDepth, structureName);
       var structure = CivilObjectUtils.GetRequiredObject<Structure>(transaction, createdStructureId, OpenMode.ForWrite);
       CivilObjectUtils.ApplyColorIndex(structure, colorIndex);
-      CivilObjectUtils.ApplyRotationDegrees(structure, rotationDegrees);
+      var rotationApplied = CivilObjectUtils.ApplyRotationDegrees(structure, rotationDegrees);
 
       return new Dictionary<string, object?>
       {
         ["networkName"] = CivilObjectUtils.GetName(network) ?? networkName,
         ["structure"] = ToStructureData(structure, transaction),
         ["added"] = true,
+        ["rotationApplied"] = rotationApplied,
       };
     });
   }

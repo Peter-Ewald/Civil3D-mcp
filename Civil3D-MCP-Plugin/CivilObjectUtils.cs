@@ -35,12 +35,19 @@ public static class CivilObjectUtils
   // the assigned Style, so this actually has a visible effect. Left unset,
   // new structures default to rotation 0 regardless of which way their
   // connected pipes run.
-  public static void ApplyRotationDegrees(AcDbObject structure, double? rotationDegrees)
+  //
+  // Civil3DCompatibility.TrySetProperty swallows any exception and returns
+  // false rather than throwing (a missing/unwritable "Rotation" property on
+  // this Structure type would fail exactly that way) - returning that bool
+  // here, rather than discarding it, so a silent failure shows up in the API
+  // response instead of just looking like "nothing happened".
+  public static bool ApplyRotationDegrees(AcDbObject structure, double? rotationDegrees)
   {
     if (rotationDegrees is double degrees)
     {
-      Civil3DCompatibility.TrySetProperty(structure, "Rotation", degrees * Math.PI / 180.0);
+      return Civil3DCompatibility.TrySetProperty(structure, "Rotation", degrees * Math.PI / 180.0);
     }
+    return true;
   }
 
   public static string? GetName(object? value)
