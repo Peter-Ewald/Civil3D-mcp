@@ -33,6 +33,11 @@ public static class DrawingCommands
       ["currentOperationDurationMs"] = status.CurrentOperationStartedAtUnixMs is long startedAt
         ? Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - startedAt)
         : null,
+      // Where the in-flight operation currently sits inside CivilExecution.
+      // This command deliberately does not acquire the host gate, so these
+      // still answer while an operation is stuck holding it.
+      ["currentStage"] = status.CurrentStage,
+      ["currentStageDurationMs"] = status.CurrentStageDurationMs,
       ["memoryUsageMb"] = Math.Round(process.PrivateMemorySize64 / 1024d / 1024d, 2),
       ["logFilePath"] = PluginLog.LogFilePath,
       ["fileLoggingHealthy"] = PluginLog.IsFileLoggingHealthy,

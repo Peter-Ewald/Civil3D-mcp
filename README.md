@@ -385,7 +385,7 @@ Once loaded, three commands are available in the Civil 3D command line:
 |---|---|
 | `C3DMCPSTART` | Start the JSON-RPC server (auto-starts on plugin load) |
 | `C3DMCPSTOP` | Stop the JSON-RPC server |
-| `C3DMCPSTATUS` | Show server status, port, and queue depth |
+| `C3DMCPSTATUS` | Show server status, queue depth, and the in-flight operation with the pipeline stage it has reached |
 
 ### 3 — Configure Your AI Client
 

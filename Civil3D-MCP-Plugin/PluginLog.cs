@@ -4,12 +4,16 @@ namespace Civil3DMcpPlugin;
 
 /// <summary>
 /// Lightweight plugin-side logger that writes timestamped entries to a rotating
-/// log file under <c>%LOCALAPPDATA%\Civil3DMcpPlugin\plugin.log</c> and
-  /// mirrors entries to the debugger without calling host APIs from worker threads.
+/// log file under <c>%LOCALAPPDATA%\Civil3DMcpPlugin\plugin.log</c> without
+/// calling host APIs from worker threads.
 ///
-/// The logger is deliberately dependency-free: a single background writer
-/// serializes file writes without blocking Civil 3D. All methods are safe to
-/// call before <c>PluginEntry.Initialize</c> runs.
+/// The logger is deliberately dependency-free, which costs it asynchrony: each
+/// entry opens, appends to, and closes the file synchronously on the calling
+/// thread under a global lock. Callers running on Civil 3D's UI thread - inside
+/// an <c>ExecuteInCommandContextAsync</c> callback, for instance - should
+/// therefore accumulate what they need and log it once the context has unwound,
+/// rather than logging per step. All methods are safe to call before
+/// <c>PluginEntry.Initialize</c> runs.
 /// </summary>
 public static class PluginLog
 {

@@ -76,7 +76,14 @@ public sealed class PluginEntry : IExtensionApplication
   public void StatusCommand()
   {
     var status = PluginRuntime.GetStatus();
-    WriteMessage($"Civil3D MCP listener running: {status.IsRunning}; pending: {status.QueueDepth}; active: {status.OperationInProgress}; current: {status.CurrentOperation ?? "<none>"}");
+    // Includes the pipeline stage so this command can diagnose an operation
+    // that is still running: typed in Civil 3D's own command line, it reports
+    // where that operation is stuck without going through the RPC path it may
+    // be blocking.
+    var stage = status.CurrentStage == null
+      ? "<none>"
+      : $"{status.CurrentStage} ({status.CurrentStageDurationMs}ms)";
+    WriteMessage($"Civil3D MCP listener running: {status.IsRunning}; pending: {status.QueueDepth}; active: {status.OperationInProgress}; current: {status.CurrentOperation ?? "<none>"}; stage: {stage}");
   }
 
   private static void WriteMessage(string message)

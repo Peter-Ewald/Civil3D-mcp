@@ -12,7 +12,9 @@ public sealed record PluginStatus(
   int QueueDepth,
   int QueueCapacity,
   long? CurrentOperationStartedAtUnixMs,
-  string? CurrentRequestId);
+  string? CurrentRequestId,
+  string? CurrentStage,
+  long? CurrentStageDurationMs);
 
 public sealed class JsonRpcDispatchException : Exception
 {
@@ -40,6 +42,18 @@ public static class PluginRuntime
   private static string? _currentOperation;
   private static string? _currentRequestId;
   private static long? _currentOperationStartedAtUnixMs;
+  // Where the active operation currently sits inside the CivilExecution
+  // pipeline. Deliberately a single global rather than per-request state:
+  // CivilExecution's HostExecutionGate admits exactly one operation at a time,
+  // so there is never a second operation whose stage this could confuse.
+  //
+  // Read from RPC worker threads while written from AutoCAD's UI thread, so
+  // both fields go through Volatile rather than the Sync lock - a stage write
+  // happens on the UI thread inside the command context, where blocking on a
+  // lock held by an unrelated status read would be a real (if small) risk for
+  // no benefit. A reference write and a 64-bit long write are each atomic.
+  private static string? _currentStage;
+  private static long _currentStageStartedAtUnixMs;
 
   public static void StartServer()
   {
@@ -66,11 +80,19 @@ public static class PluginRuntime
       _queueDepth = 0;
       _currentRequestId = null;
       _currentOperationStartedAtUnixMs = null;
+      ClearOperationStage();
     }
   }
 
   public static PluginStatus GetStatus()
   {
+    // Read the stage pair outside the lock, matching how it is written. A
+    // torn read here is harmless: the worst case is a stage name paired with
+    // the neighbouring stage's start time, which shifts a reported duration by
+    // the length of one pipeline step.
+    var currentStage = Volatile.Read(ref _currentStage);
+    var stageStartedAt = Volatile.Read(ref _currentStageStartedAtUnixMs);
+
     lock (Sync)
     {
       return new PluginStatus(
@@ -80,7 +102,11 @@ public static class PluginRuntime
         _queueDepth,
         MaxQueuedHostOperations,
         _currentOperationStartedAtUnixMs,
-        _currentRequestId);
+        _currentRequestId,
+        currentStage,
+        currentStage == null
+          ? null
+          : Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - stageStartedAt));
     }
   }
 
@@ -259,8 +285,26 @@ public static class PluginRuntime
         _currentOperation = null;
         _currentRequestId = null;
         _currentOperationStartedAtUnixMs = null;
+        ClearOperationStage();
       }
     }
+  }
+
+  /// <summary>
+  /// Records where the active host operation currently sits, so a stalled
+  /// operation can be located while it is still stalled. <c>civil3d_health</c>
+  /// reports this and does not itself acquire the host gate, so it still
+  /// answers during a stall that is blocking every other call.
+  /// </summary>
+  internal static void RecordOperationStage(string stage)
+  {
+    Volatile.Write(ref _currentStageStartedAtUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    Volatile.Write(ref _currentStage, stage);
+  }
+
+  internal static void ClearOperationStage()
+  {
+    Volatile.Write(ref _currentStage, null);
   }
 
   public static object? GetParameter(JsonObject? parameters, string name)
