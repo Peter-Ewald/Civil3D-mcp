@@ -32,6 +32,7 @@ public static class PluginRuntime
 
   private static readonly object Sync = new();
   private static RpcTcpServer? _server;
+  private static long _inProcessRequestCount;
   private static readonly AsyncLocal<string?> CurrentRequestOperation = new();
   private static readonly AsyncLocal<string?> CurrentRequestId = new();
   private static readonly AsyncLocal<CancellationToken> CurrentRequestCancellation = new();
@@ -54,6 +55,18 @@ public static class PluginRuntime
   // no benefit. A reference write and a 64-bit long write are each atomic.
   private static string? _currentStage;
   private static long _currentStageStartedAtUnixMs;
+
+  /// <summary>
+  /// Consulted once per incoming request, before it is dispatched and therefore
+  /// before the host execution gate is taken - so an implementation that waits
+  /// on a person does not hold that gate while it waits.
+  ///
+  /// Null by default, which admits every request: a host that sets nothing here
+  /// behaves exactly as it did before this hook existed. An implementation
+  /// refuses a request by throwing, and a <see cref="JsonRpcDispatchException"/>
+  /// is reported to the caller with its own code, like any other domain error.
+  /// </summary>
+  public static Func<string, JsonObject?, CancellationToken, Task>? AuthorizeRequest { get; set; }
 
   public static void StartServer()
   {
@@ -154,14 +167,25 @@ public static class PluginRuntime
     var previousOperation = CurrentRequestOperation.Value;
     var previousRequestId = CurrentRequestId.Value;
     var previousCancellation = CurrentRequestCancellation.Value;
+    var previousExpectedDrawingIdentity = CurrentExpectedDrawingIdentity.Value;
     CurrentRequestOperation.Value = method;
     CurrentRequestId.Value = id?.ToJsonString();
     CurrentRequestCancellation.Value = cancellationToken;
+    // Recorded here, when the request is admitted, so the identity check inside
+    // the command context has an earlier value to compare the live drawing
+    // against. Read from this worker thread the same way a queued job already
+    // reads it, before any host work is scheduled.
+    CurrentExpectedDrawingIdentity.Value = GetActiveDrawingIdentity();
 
     var timer = System.Diagnostics.Stopwatch.StartNew();
     try
     {
       PluginLog.Debug("Dispatch", $"-> {method} [{CurrentRequestId.Value ?? "no-id"}]");
+      if (AuthorizeRequest is { } authorize)
+      {
+        await authorize(method, parameters, cancellationToken);
+      }
+
       var result = await CommandDispatcher.DispatchAsync(method, parameters, cancellationToken);
       PluginLog.Debug("Dispatch", $"<- {method} [{CurrentRequestId.Value ?? "no-id"}] ok durationMs={timer.ElapsedMilliseconds}");
       return JsonRpcProtocol.SerializeResult(id, result);
@@ -188,8 +212,25 @@ public static class PluginRuntime
       CurrentRequestOperation.Value = previousOperation;
       CurrentRequestId.Value = previousRequestId;
       CurrentRequestCancellation.Value = previousCancellation;
+      CurrentExpectedDrawingIdentity.Value = previousExpectedDrawingIdentity;
     }
   }
+
+  /// <summary>
+  /// Runs one command from inside this process, with the same request context an
+  /// incoming RPC request gets - so the drawing-identity check applies to a
+  /// caller in the same process exactly as it does to a remote one.
+  /// </summary>
+  public static Task<T> RunInProcessRequestAsync<T>(
+    string operation,
+    CancellationToken cancellationToken,
+    Func<Task<T>> action) =>
+    RunWithRequestContextAsync(
+      operation,
+      $"in-process:{Interlocked.Increment(ref _inProcessRequestCount)}",
+      cancellationToken,
+      GetActiveDrawingIdentity(),
+      action);
 
   internal static CancellationToken GetCurrentRequestCancellationToken() => CurrentRequestCancellation.Value;
 
