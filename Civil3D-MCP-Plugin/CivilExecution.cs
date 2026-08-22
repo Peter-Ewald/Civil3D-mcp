@@ -45,6 +45,23 @@ public static class CivilExecution
       T? result = default;
       Exception? capturedException = null;
 
+      // Read here, before entering the command context, and captured for the
+      // callback to compare against. The expected drawing travels with the
+      // request as ambient per-request state, and Civil 3D invokes the callback
+      // below from its own command loop rather than as a continuation of this
+      // call, so that state is not reliably visible inside it. Reading it on
+      // this side removes the dependency on how Civil 3D schedules the callback.
+      var expectedDrawingIdentity = PluginRuntime.GetExpectedDrawingIdentity();
+      if (string.IsNullOrWhiteSpace(expectedDrawingIdentity))
+      {
+        // Surfaced rather than passed over: an operation with no recorded
+        // drawing is one this check cannot protect, and a check that quietly
+        // does nothing is worse than one that says so.
+        PluginLog.Warn(
+          "CivilExecution",
+          $"No expected drawing was recorded for '{PluginRuntime.GetCurrentRequestOperation()}', so the drawing identity check cannot run for it.");
+      }
+
       trace.Enter(Stage.EnteringCommandContext);
       await App.DocumentManager.ExecuteInCommandContextAsync(async _ =>
       {
@@ -52,7 +69,6 @@ public static class CivilExecution
         try
         {
           var doc = App.DocumentManager.MdiActiveDocument ?? throw new JsonRpcDispatchException("CIVIL3D.NO_DRAWING", "No active drawing is open in Civil 3D.");
-          var expectedDrawingIdentity = PluginRuntime.GetExpectedDrawingIdentity();
           var activeDrawingIdentity = PluginRuntime.GetDrawingIdentity(doc);
           if (!string.IsNullOrWhiteSpace(expectedDrawingIdentity) &&
               !string.Equals(expectedDrawingIdentity, activeDrawingIdentity, StringComparison.OrdinalIgnoreCase))
