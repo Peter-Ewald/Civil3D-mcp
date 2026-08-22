@@ -244,11 +244,21 @@ public static class PluginRuntime
     return GetDrawingIdentity(document);
   }
 
+  /// <summary>
+  /// Identifies which open drawing an operation belongs to.
+  ///
+  /// The document's own name, not <c>Database.Filename</c>: a drawing that has
+  /// never been saved reports the template it was created from as its file name,
+  /// so two unsaved drawings from one template are indistinguishable by that
+  /// measure - which is precisely the case an operation queued against the wrong
+  /// drawing needs to be caught in. The document name is distinct per open
+  /// document either way, and reads as a drawing name when reported.
+  /// </summary>
   internal static string? GetDrawingIdentity(Autodesk.AutoCAD.ApplicationServices.Document? document)
   {
     if (document == null) return null;
-    var fileName = document.Database.Filename;
-    return string.IsNullOrWhiteSpace(fileName) ? document.Name : fileName;
+    var name = document.Name;
+    return string.IsNullOrWhiteSpace(name) ? document.Database.Filename : name;
   }
 
   internal static string? GetExpectedDrawingIdentity() => CurrentExpectedDrawingIdentity.Value;

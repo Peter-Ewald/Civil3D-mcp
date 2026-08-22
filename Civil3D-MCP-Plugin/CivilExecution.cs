@@ -62,6 +62,11 @@ public static class CivilExecution
           $"No expected drawing was recorded for '{PluginRuntime.GetCurrentRequestOperation()}', so the drawing identity check cannot run for it.");
       }
 
+      // Assigned inside the callback and read after it, so a completed write can
+      // report the drawing it landed in without doing any logging from inside
+      // the command context.
+      string? activeDrawingIdentity = null;
+
       trace.Enter(Stage.EnteringCommandContext);
       await App.DocumentManager.ExecuteInCommandContextAsync(async _ =>
       {
@@ -69,7 +74,7 @@ public static class CivilExecution
         try
         {
           var doc = App.DocumentManager.MdiActiveDocument ?? throw new JsonRpcDispatchException("CIVIL3D.NO_DRAWING", "No active drawing is open in Civil 3D.");
-          var activeDrawingIdentity = PluginRuntime.GetDrawingIdentity(doc);
+          activeDrawingIdentity = PluginRuntime.GetDrawingIdentity(doc);
           if (!string.IsNullOrWhiteSpace(expectedDrawingIdentity) &&
               !string.Equals(expectedDrawingIdentity, activeDrawingIdentity, StringComparison.OrdinalIgnoreCase))
           {
@@ -101,6 +106,17 @@ public static class CivilExecution
         await Task.CompletedTask;
       }, null);
       trace.Enter(Stage.CommandContextExited);
+
+      if (write && capturedException == null)
+      {
+        // Which drawing a write actually landed in, recorded after the command
+        // context has unwound rather than from inside it. This is the one fact
+        // about a completed write that cannot be recovered afterwards from
+        // anything else in this log.
+        PluginLog.Info(
+          "CivilExecution",
+          $"{PluginRuntime.GetCurrentRequestOperation()} wrote to drawing '{activeDrawingIdentity}'.");
+      }
 
       if (capturedException != null)
       {
