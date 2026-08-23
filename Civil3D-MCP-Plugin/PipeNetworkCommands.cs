@@ -316,6 +316,13 @@ public static class PipeNetworkCommands
           ["name"] = GetPartsListName(partsList),
           ["handle"] = partsList is AcDbObject dbObject ? CivilObjectUtils.GetHandle(dbObject) : null,
           ["parts"] = EnumeratePartNames(partsList, transaction).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(name => name).ToList(),
+          // Reported separately as well as flat, because a caller choosing a
+          // part has to know which domain it belongs to: passing a pipe family
+          // where a structure belongs is accepted here and refused later by
+          // Civil 3D itself. Additive, so a caller reading only "parts" is
+          // unaffected.
+          ["pipeParts"] = EnumerateSelectablePartNames(partsList, transaction, DomainType.Pipe),
+          ["structureParts"] = EnumerateSelectablePartNames(partsList, transaction, DomainType.Structure),
         })
         .ToList();
 
@@ -565,7 +572,23 @@ public static class PipeNetworkCommands
   {
     var part = FindPartForNetwork(network, transaction, partName, DomainType.Structure);
     var createdId = ObjectId.Null;
-    network.AddStructure(part.FamilyId, part.SizeId, location, 0.0, ref createdId, applyRules: false);
+    try
+    {
+      network.AddStructure(part.FamilyId, part.SizeId, location, 0.0, ref createdId, applyRules: false);
+    }
+    catch (InvalidOperationException ex)
+    {
+      // Civil 3D accepts any structure-domain family here and then refuses the
+      // ones it cannot place - an end section, for instance, where a junction is
+      // required. Its own reason is kept, since it is the accurate one, and the
+      // parts a caller could have chosen instead are added to it: reported as
+      // anything other than invalid input, this reads as a plugin fault rather
+      // than as a part name to change.
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.INVALID_INPUT",
+        $"Civil 3D would not place a structure from part '{partName}': {ex.Message} "
+        + $"Structure parts available in this network's parts list: {DescribeSelectableStructureParts(network, transaction)}.");
+    }
     var structure = CivilObjectUtils.GetRequiredObject<Structure>(transaction, createdId, OpenMode.ForWrite);
     structure.RimElevation = rimElevation;
     structure.RimToSumpHeight = sumpDepth;
@@ -817,6 +840,47 @@ public static class PipeNetworkCommands
     }
   }
 
+  /// <summary>
+  /// The part names in one domain that a caller may actually pass as
+  /// <c>partName</c>. Deliberately mirrors what <see cref="FindPartForNetwork"/>
+  /// matches on rather than listing whatever is easiest to enumerate: a part size's
+  /// own name, plus the family name where the family holds exactly one size. A
+  /// catalog that lists names resolution then rejects is worse than no catalog.
+  /// </summary>
+  private static List<string> EnumerateSelectablePartNames(object partsListObject, Transaction transaction, DomainType domain)
+  {
+    var names = new List<string>();
+    if (partsListObject is not PartsList partsList)
+    {
+      return names;
+    }
+
+    foreach (ObjectId familyId in partsList.GetPartFamilyIdsByDomain(domain))
+    {
+      if (transaction.GetObject(familyId, OpenMode.ForRead) is not PartFamily family)
+      {
+        continue;
+      }
+
+      if (family.PartSizeCount == 1 && !string.IsNullOrWhiteSpace(family.Name))
+      {
+        names.Add(family.Name);
+      }
+
+      for (var index = 0; index < family.PartSizeCount; index++)
+      {
+        var size = transaction.GetObject(family[index], OpenMode.ForRead);
+        var sizeName = CivilObjectUtils.GetName(size) ?? CivilObjectUtils.GetStringProperty(size, "Description");
+        if (!string.IsNullOrWhiteSpace(sizeName))
+        {
+          names.Add(sizeName!);
+        }
+      }
+    }
+
+    return names.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
+  }
+
   private static IEnumerable<string> EnumeratePartNames(object partsListObject, Transaction transaction)
   {
     // Same reflection limitation as GetPartsListName above: PartFamilyCount,
@@ -909,6 +973,18 @@ public static class PipeNetworkCommands
     }
 
     throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Exact {domain} size '{partName}' was not found in the parts list for network '{network.Name}'.");
+  }
+
+  private static string DescribeSelectableStructureParts(Network network, Transaction transaction)
+  {
+    if (network.PartsListId.IsNull)
+    {
+      return "none, because this network has no parts list assigned";
+    }
+
+    var partsList = CivilObjectUtils.GetRequiredObject<PartsList>(transaction, network.PartsListId, OpenMode.ForRead);
+    var names = EnumerateSelectablePartNames(partsList, transaction, DomainType.Structure);
+    return names.Count == 0 ? "none" : string.Join(", ", names);
   }
 
   private static Point3d GetStructureLocation(Transaction transaction, ObjectId structureId, string endpointName)
