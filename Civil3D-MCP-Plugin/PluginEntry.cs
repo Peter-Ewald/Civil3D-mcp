@@ -2,28 +2,30 @@ using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.Runtime;
 using App = Autodesk.AutoCAD.ApplicationServices.Application;
 
+[assembly: ExtensionApplication(typeof(Civil3DMcpPlugin.PluginEntry))]
 [assembly: CommandClass(typeof(Civil3DMcpPlugin.PluginEntry))]
 
 namespace Civil3DMcpPlugin;
 
 /// <summary>
-/// The listener's own start, stop and status commands, and the entry point a
-/// host would run on load.
+/// This assembly's entry point, and the listener's own start, stop and status
+/// commands.
 ///
-/// <b>This library is deliberately not declared as the assembly's extension
-/// application in this fork</b>, so AutoCAD never calls <see cref="Initialize"/>
-/// or <see cref="Terminate"/> here: the drainage plugin that references this
-/// library is the extension application, and it decides whether the listener
-/// runs. It does not run it. Nothing goes over the socket any more - the
-/// conversation with the agent runs inside Civil 3D and reaches these commands
-/// by an assembly reference - and a library resolved as a dependency should not
-/// open a port on its own.
+/// <b>Loading does not start the listener in this fork.</b> Nothing goes over
+/// the socket any more: the conversation with the agent runs inside Civil 3D and
+/// reaches these commands by an assembly reference, so a library that AutoCAD
+/// resolves as a dependency should not open a port on its own. Whoever wants one
+/// asks for it with <c>C3DMCPSTART</c>, which is how a third party client that
+/// speaks the Model Context Protocol is given a way in deliberately. Restoring
+/// the old behaviour is one call in <see cref="Initialize"/>.
 ///
-/// Both methods are kept rather than deleted. They are correct for a host that
-/// does load this library directly, and restoring that behaviour is one
-/// attribute line: <c>[assembly: ExtensionApplication(typeof(PluginEntry))]</c>.
-/// <c>C3DMCPSTART</c> starts the listener for a session meanwhile, which
-/// is how a third party MCP client is given one deliberately.
+/// <b>AutoCAD calls this whether or not the attribute above is present.</b> The
+/// attribute names the entry point; with no attribute AutoCAD searches the
+/// assembly for a public type implementing <see cref="IExtensionApplication"/>
+/// and calls that instead, and this class is that type. Removing the attribute
+/// therefore does not stop AutoCAD running this code, only stop it saying so,
+/// which is why it is declared: the truthful shape is an entry point that is
+/// called and does not open a port, rather than one that hides how it was found.
 /// </summary>
 public sealed class PluginEntry : IExtensionApplication
 {
@@ -36,25 +38,23 @@ public sealed class PluginEntry : IExtensionApplication
 
   public void Initialize()
   {
-    try
-    {
-      PluginRuntime.StartServer();
-      PluginLog.Info("PluginEntry", $"Civil3D MCP plugin initialized on port {PluginRuntime.Port}. Log file: {PluginLog.LogFilePath}");
-      WriteMessage("Civil3D MCP plugin initialized.");
-    }
-    catch (System.Exception ex)
-    {
-      PluginLog.Error("PluginEntry", "Plugin failed to initialize", ex);
-      WriteMessage($"Civil3D MCP plugin failed to initialize: {ex.Message}");
-    }
+    // No listener, deliberately. Nothing is started here at all: this reports
+    // that the command library is loaded and reachable, which is all a host
+    // needs to know from it.
+    PluginLog.Info(
+      "PluginEntry",
+      $"Civil3D MCP command library loaded. The listener is not running; C3DMCPSTART starts it on port {PluginRuntime.Port}. Log file: {PluginLog.LogFilePath}");
+    WriteMessage("Civil3D MCP command library loaded. Listener off; C3DMCPSTART starts it.");
   }
 
   public void Terminate()
   {
     try
     {
+      // Nothing here started it, but C3DMCPSTART may have, and an unloading
+      // library must not leave a port open behind it.
       PluginRuntime.StopServer();
-      PluginLog.Info("PluginEntry", "Civil3D MCP plugin terminated cleanly.");
+      PluginLog.Info("PluginEntry", "Civil3D MCP command library unloaded.");
     }
     catch (System.Exception ex)
     {
