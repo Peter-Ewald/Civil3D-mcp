@@ -7,13 +7,16 @@ namespace Civil3DMcpPlugin;
 /// log file under <c>%LOCALAPPDATA%\Civil3DMcpPlugin\plugin.log</c> without
 /// calling host APIs from worker threads.
 ///
-/// The logger is deliberately dependency-free, which costs it asynchrony: each
-/// entry opens, appends to, and closes the file synchronously on the calling
-/// thread under a global lock. Callers running on Civil 3D's UI thread - inside
-/// an <c>ExecuteInCommandContextAsync</c> callback, for instance - should
-/// therefore accumulate what they need and log it once the context has unwound,
-/// rather than logging per step. All methods are safe to call before
-/// <c>PluginEntry.Initialize</c> runs.
+/// This decides what an entry says and whether its level passes, and hands the
+/// finished line to <see cref="LogFileWriter"/>, which queues it and writes it
+/// on a thread of its own. So a caller returns without touching the disk, and
+/// code running on Civil 3D's UI thread - inside an
+/// <c>ExecuteInCommandContextAsync</c> callback, for instance - can log per step
+/// without slowing the operation it is measuring.
+///
+/// All methods are safe to call before <c>PluginEntry.Initialize</c> runs.
+/// <see cref="Shutdown"/> is the one thing a host owes this logger: without it,
+/// whatever is still queued when the process ends never reaches the file.
 /// </summary>
 public static class PluginLog
 {
@@ -25,17 +28,22 @@ public static class PluginLog
     Error = 3,
   }
 
-  private const long MaxLogFileBytes = 5L * 1024 * 1024; // 5 MiB per log file
-  private const int RotatedBackupsKept = 3;
+  private const string Component = "PluginLog";
 
-  private static readonly object FileSync = new();
   private static readonly Lazy<string> LogFilePathLazy = new(BuildLogFilePath);
+  private static readonly Lazy<LogFileWriter> FileWriter = new(
+    () => new LogFileWriter(LogFilePathLazy.Value, DescribeDroppedLines));
+
   private static Level _minimumLevel = ReadLevelFromEnvironment();
-  private static string? _lastFileError;
 
   public static string LogFilePath => LogFilePathLazy.Value;
 
-  public static string? LastFileError => Volatile.Read(ref _lastFileError);
+  /// <summary>
+  /// The last failure to write to the file, or null if the most recent write
+  /// succeeded. It reports the writing thread's state, so it lags the call that
+  /// caused it by however long that entry waited to be written.
+  /// </summary>
+  public static string? LastFileError => FileWriter.Value.LastError;
 
   public static bool IsFileLoggingHealthy => LastFileError == null && File.Exists(LogFilePath);
 
@@ -67,6 +75,19 @@ public static class PluginLog
     Write(Level.Debug, component, $"Ignored error during {operation}: {exception.Message}", exception);
   }
 
+  /// <summary>
+  /// Waits for everything already logged to reach the file, then stops the
+  /// writing thread. Call it last when the plugin unloads: an entry written
+  /// after this still reaches the file, written by the calling thread.
+  /// </summary>
+  public static void Shutdown(TimeSpan timeout)
+  {
+    if (FileWriter.IsValueCreated)
+    {
+      FileWriter.Value.Shutdown(timeout);
+    }
+  }
+
   private static void Write(Level level, string component, string message, Exception? exception)
   {
     if (level < _minimumLevel)
@@ -74,9 +95,18 @@ public static class PluginLog
       return;
     }
 
-    var timestamp = DateTimeOffset.UtcNow.ToString("O");
+    FileWriter.Value.Write(Format(level, component, message, exception));
+  }
+
+  /// <summary>
+  /// One entry as it appears in the file. A stack trace goes on its own line
+  /// inside the same entry rather than being logged separately, so nothing can
+  /// come between a failure and the trace that explains it.
+  /// </summary>
+  private static string Format(Level level, string component, string message, Exception? exception)
+  {
     var line = new StringBuilder()
-      .Append('[').Append(timestamp).Append("] ")
+      .Append('[').Append(DateTimeOffset.UtcNow.ToString("O")).Append("] ")
       .Append('[').Append(level).Append("] ")
       .Append('[').Append(component).Append("] ")
       .Append(message);
@@ -84,77 +114,22 @@ public static class PluginLog
     if (exception != null)
     {
       line.Append(" | ").Append(exception.GetType().Name).Append(": ").Append(exception.Message);
-    }
 
-    var text = line.ToString();
-
-    TryAppendToFile(text, exception);
-
-  }
-
-  private static void TryAppendToFile(string text, Exception? exception)
-  {
-    try
-    {
-      var path = LogFilePathLazy.Value;
-
-      lock (FileSync)
+      if (exception.StackTrace != null)
       {
-        RotateIfNeeded(path);
-
-        using var writer = new StreamWriter(path, append: true, Encoding.UTF8);
-        writer.WriteLine(text);
-
-        if (exception?.StackTrace != null)
-        {
-          writer.WriteLine(exception.StackTrace);
-        }
-
-        Volatile.Write(ref _lastFileError, null);
+        line.Append(Environment.NewLine).Append(exception.StackTrace);
       }
     }
-    catch (Exception fileException)
-    {
-      // Logging itself must never throw into plugin code paths.
-      Volatile.Write(
-        ref _lastFileError,
-        $"{fileException.GetType().Name}: {fileException.Message}");
-      System.Diagnostics.Debug.WriteLine(
-        $"Civil3D MCP file logging failed: {LastFileError}");
-    }
+
+    return line.ToString();
   }
 
-  private static void RotateIfNeeded(string path)
-  {
-    try
-    {
-      var info = new FileInfo(path);
-      if (!info.Exists || info.Length < MaxLogFileBytes)
-      {
-        return;
-      }
-
-      for (var index = RotatedBackupsKept; index >= 1; index--)
-      {
-        var older = $"{path}.{index}";
-        var newer = index == 1 ? path : $"{path}.{index - 1}";
-
-        if (File.Exists(older))
-        {
-          File.Delete(older);
-        }
-
-        if (File.Exists(newer))
-        {
-          File.Move(newer, older);
-        }
-      }
-    }
-    catch
-    {
-      // Best-effort rotation; truncating failures are not worth escalating.
-    }
-  }
+  private static string DescribeDroppedLines(int count) =>
+    Format(
+      Level.Warn,
+      Component,
+      $"{count} entries were dropped because they were logged faster than they could be written.",
+      exception: null);
 
   private static string BuildLogFilePath()
   {
