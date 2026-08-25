@@ -990,6 +990,15 @@ to override its directory or minimum level. Plugin health reports
 `logFilePath`, `fileLoggingHealthy`, and `fileLoggingError`, so a file-write
 failure cannot remain silent.
 
+A host assembly that loads this library as a dependency can name the file
+itself, with `PluginLog.UseLogFile(path)`, so one log covers the host and this
+library rather than two covering half each. Nothing here calls it, and unset
+the default above applies. It may be called after logging has started, which it
+usually is: whichever extension application AutoCAD reaches first has already
+written its load line, so the file being left names the one taking over and the
+new file names where its history is. `CIVIL3D_MCP_LOG_DIR` still decides the
+directory when it is set; the host decides the file name.
+
 ### HTTP bridge endpoints
 
 | Method | Path | Notes |
