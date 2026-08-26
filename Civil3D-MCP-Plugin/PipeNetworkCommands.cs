@@ -210,6 +210,7 @@ public static class PipeNetworkCommands
     var structureName = PluginRuntime.GetOptionalString(parameters, "structureName");
     var colorIndex = PluginRuntime.GetOptionalInt(parameters, "colorIndex");
     var rotationDegrees = PluginRuntime.GetOptionalDouble(parameters, "rotationDegrees");
+    var layerName = PluginRuntime.GetOptionalString(parameters, "layer");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
@@ -219,6 +220,7 @@ public static class PipeNetworkCommands
       var structure = CivilObjectUtils.GetRequiredObject<Structure>(transaction, createdStructureId, OpenMode.ForWrite);
       CivilObjectUtils.ApplyColorIndex(structure, colorIndex);
       var rotationApplied = CivilObjectUtils.ApplyRotationDegrees(structure, rotationDegrees);
+      ApplyLayer(structure, layerName, database, transaction);
 
       return new Dictionary<string, object?>
       {
@@ -226,6 +228,9 @@ public static class PipeNetworkCommands
         ["structure"] = ToStructureData(structure, transaction),
         ["added"] = true,
         ["rotationApplied"] = rotationApplied,
+        // Read back off the object rather than echoed from the request, so a
+        // caller can tell whether the layer it asked for is the one it got.
+        ["layer"] = structure.Layer,
       };
     });
   }
@@ -236,6 +241,7 @@ public static class PipeNetworkCommands
     var partName = PluginRuntime.GetRequiredString(parameters, "partName");
     var diameter = PluginRuntime.GetOptionalDouble(parameters, "diameter");
     var colorIndex = PluginRuntime.GetOptionalInt(parameters, "colorIndex");
+    var layerName = PluginRuntime.GetOptionalString(parameters, "layer");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
@@ -254,14 +260,41 @@ public static class PipeNetworkCommands
       var createdPipeId = AddPipeToNetwork(network, transaction, partName, diameter, startPoint, endPoint, startStructureId, endStructureId);
       var pipe = CivilObjectUtils.GetRequiredObject<Pipe>(transaction, createdPipeId, OpenMode.ForWrite);
       CivilObjectUtils.ApplyColorIndex(pipe, colorIndex);
+      ApplyLayer(pipe, layerName, database, transaction);
 
       return new Dictionary<string, object?>
       {
         ["networkName"] = CivilObjectUtils.GetName(network) ?? networkName,
         ["pipe"] = ToPipeData(pipe, transaction),
         ["added"] = true,
+        // See AddStructureToNetworkAsync: read back, not echoed.
+        ["layer"] = pipe.Layer,
       };
     });
+  }
+
+  /// <summary>
+  /// Puts a network part on a named layer, creating the layer if the drawing does
+  /// not have it yet. Nothing is asked for, nothing is changed.
+  /// </summary>
+  /// <remarks>
+  /// A pipe network part takes its layer from the network's part settings when it
+  /// is created, so this is an override applied afterwards. It matters because a
+  /// layer is how a caller tells the objects it owns from the ones it is only
+  /// watching, and that distinction has to survive closing the drawing.
+  /// </remarks>
+  private static void ApplyLayer(
+    Autodesk.AutoCAD.DatabaseServices.Entity part,
+    string? layerName,
+    Database database,
+    Transaction transaction)
+  {
+    if (string.IsNullOrWhiteSpace(layerName))
+    {
+      return;
+    }
+
+    part.LayerId = LookupUtils.EnsureLayerId(database, transaction, layerName!);
   }
 
   public static Task<object?> ResizePipeInNetworkAsync(JsonObject? parameters)

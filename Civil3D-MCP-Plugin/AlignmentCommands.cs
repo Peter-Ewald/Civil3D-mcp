@@ -214,7 +214,14 @@ public static class AlignmentCommands
         PlineId = polylineId,
       };
 
-      var layerId = LookupUtils.GetLayerId(database, transaction, PluginRuntime.GetOptionalString(parameters, "layer"));
+      // Ensured rather than looked up: an alignment is an input other people
+      // own, so which layer it lands on is part of the answer and not a
+      // presentation detail. A drawing that does not have the layer yet gets
+      // one, instead of the alignment quietly landing on whatever was current.
+      var requestedLayer = PluginRuntime.GetOptionalString(parameters, "layer");
+      var layerId = string.IsNullOrWhiteSpace(requestedLayer)
+        ? database.Clayer
+        : LookupUtils.EnsureLayerId(database, transaction, requestedLayer!);
       var styleId = LookupUtils.GetAlignmentStyleId(civilDoc, transaction, PluginRuntime.GetOptionalString(parameters, "style"));
       var labelSetId = LookupUtils.GetAlignmentLabelSetId(civilDoc, transaction, PluginRuntime.GetOptionalString(parameters, "labelSet"));
       var siteId = LookupUtils.GetSiteId(civilDoc, transaction, PluginRuntime.GetOptionalString(parameters, "site"));
@@ -227,6 +234,9 @@ public static class AlignmentCommands
         ["name"] = alignment.Name,
         ["handle"] = CivilObjectUtils.GetHandle(alignment),
         ["created"] = true,
+        // Read back off the object, so a caller can tell whether the layer it
+        // asked for is the one it got.
+        ["layer"] = alignment.Layer,
       };
     });
   }

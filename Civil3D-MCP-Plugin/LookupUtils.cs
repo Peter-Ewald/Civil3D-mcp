@@ -7,6 +7,11 @@ namespace Civil3DMcpPlugin;
 
 public static class LookupUtils
 {
+  /// <summary>
+  /// The named layer if the drawing has one, and otherwise the layer that is
+  /// current. For callers where a layer is presentation: an object on the current
+  /// layer is still the object that was asked for.
+  /// </summary>
   public static ObjectId GetLayerId(Database database, Transaction transaction, string? layerName)
   {
     if (string.IsNullOrWhiteSpace(layerName))
@@ -21,6 +26,46 @@ public static class LookupUtils
     }
 
     return database.Clayer;
+  }
+
+  /// <summary>
+  /// The named layer, created if the drawing does not have it yet, and never
+  /// something else instead.
+  /// </summary>
+  /// <remarks>
+  /// For callers where the layer carries meaning rather than appearance: which
+  /// team owns an object, and therefore whether a tool may edit it. Falling back
+  /// to the current layer there is worse than failing, because the caller is told
+  /// it placed the object where it asked and a later reader believes the layer it
+  /// finds. That is why this exists beside <see cref="GetLayerId"/> rather than
+  /// replacing it: the two answers are both right, for different questions.
+  ///
+  /// Creating a missing layer rather than refusing, because a scene naming a
+  /// layer convention is describing the drawing it wants, and a fresh drawing
+  /// legitimately has none of those layers yet.
+  /// </remarks>
+  public static ObjectId EnsureLayerId(Database database, Transaction transaction, string layerName)
+  {
+    if (string.IsNullOrWhiteSpace(layerName))
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.INVALID_INPUT",
+        "A layer was asked for by name but the name was empty.");
+    }
+
+    var layerTable = CivilObjectUtils.GetRequiredObject<LayerTable>(transaction, database.LayerTableId, OpenMode.ForRead);
+    if (layerTable.Has(layerName))
+    {
+      return layerTable[layerName];
+    }
+
+    // Not disposed here: the transaction takes ownership on the line below, which
+    // is the same shape CivilObjectUtils.TrySetLayer already uses to add one.
+    layerTable.UpgradeOpen();
+    var layer = new LayerTableRecord { Name = layerName };
+    var layerId = layerTable.Add(layer);
+    transaction.AddNewlyCreatedDBObject(layer, true);
+    return layerId;
   }
 
   public static ObjectId GetSiteId(CivilDocument civilDoc, Transaction transaction, string? siteName)
