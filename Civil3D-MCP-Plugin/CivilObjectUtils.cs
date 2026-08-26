@@ -9,6 +9,22 @@ namespace Civil3DMcpPlugin;
 
 public static class CivilObjectUtils
 {
+  /// <summary>
+  /// A coordinate as every other coordinate on this interface is reported: three
+  /// named numbers in the drawing's own units, which for a metric drawing means
+  /// metres. Shared, so that a caller reading a pipe's geometry and a caller
+  /// reading a structure's get the same three field names.
+  /// </summary>
+  public static Dictionary<string, object?> ToPointData(Autodesk.AutoCAD.Geometry.Point3d point)
+  {
+    return new Dictionary<string, object?>
+    {
+      ["x"] = point.X,
+      ["y"] = point.Y,
+      ["z"] = point.Z,
+    };
+  }
+
   public static string GetHandle(AcDbObject dbObject)
   {
     return dbObject.Handle.ToString();

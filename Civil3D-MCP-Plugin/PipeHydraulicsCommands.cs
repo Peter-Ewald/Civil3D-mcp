@@ -245,8 +245,11 @@ public static class PipeHydraulicsCommands
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
 
-  private sealed record PipeInfo(string Name, double Diameter, double Length, double Slope, double InvertIn, double InvertOut);
-  private sealed record StructureInfo(string Name, double RimElevation, double SumpElevation, List<string> ConnectedPipes);
+  // Both carry where the object is, not only how deep it is. A caller checking a
+  // new route against existing infrastructure needs the plan geometry, and one
+  // reading a whole network needs it without a follow-up call per object.
+  private sealed record PipeInfo(string Name, double Diameter, double Length, double Slope, double InvertIn, double InvertOut, Dictionary<string, object?>? StartPoint, Dictionary<string, object?>? EndPoint);
+  private sealed record StructureInfo(string Name, double X, double Y, double RimElevation, double SumpElevation, List<string> ConnectedPipes);
 
   private static DBObject FindPipeNetworkByName(object civilDoc, Transaction transaction, string name)
   {
@@ -296,7 +299,15 @@ public static class PipeHydraulicsCommands
       var length = GetAnyDouble(pipe, "Length3D", "Length2D", "Length") ?? 0.0;
       var slope = GetAnyDouble(pipe, "Slope", "FlowSlope") ?? (length > 0 ? (invertIn - invertOut) / length * 100 : 0);
       var diameter = GetAnyDouble(pipe, "InnerDiameterOrWidth", "InnerDiameter", "Diameter") ?? 1.0;
-      results.Add(new PipeInfo(CivilObjectUtils.GetName(pipe) ?? objectId.Handle.ToString(), diameter, length, slope, invertIn, invertOut));
+      results.Add(new PipeInfo(
+        CivilObjectUtils.GetName(pipe) ?? objectId.Handle.ToString(),
+        diameter,
+        length,
+        slope,
+        invertIn,
+        invertOut,
+        startPt.HasValue ? CivilObjectUtils.ToPointData(startPt.Value) : null,
+        endPt.HasValue ? CivilObjectUtils.ToPointData(endPt.Value) : null));
     }
     return results;
   }
@@ -307,12 +318,19 @@ public static class PipeHydraulicsCommands
     foreach (var objectId in GetChildObjectIds(network, "GetStructureIds", "StructureIds", "Structures", "StructureCollection"))
     {
       var structure = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, objectId, OpenMode.ForRead);
+      var location = GetPointProperty(structure, "Location", "Position", "CenterPoint");
       var rim = GetAnyDouble(structure, "RimElevation", "SurfaceElevation", "Elevation") ?? 0.0;
       var sumpDepth = GetAnyDouble(structure, "SumpDepth") ?? 0.0;
       var sump = GetAnyDouble(structure, "SumpElevation") ?? (rim - sumpDepth);
       var pipeIds = GetChildObjectIds(structure, "GetConnectedPipeIds", "ConnectedPipeIds", "ConnectedPipes")
         .Select(id => ResolveObjectName(transaction, id) ?? id.Handle.ToString()).ToList();
-      results.Add(new StructureInfo(CivilObjectUtils.GetName(structure) ?? objectId.Handle.ToString(), rim, sump, pipeIds));
+      results.Add(new StructureInfo(
+        CivilObjectUtils.GetName(structure) ?? objectId.Handle.ToString(),
+        location?.X ?? 0.0,
+        location?.Y ?? 0.0,
+        rim,
+        sump,
+        pipeIds));
     }
     return results;
   }

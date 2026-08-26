@@ -535,11 +535,17 @@ public static class PipeNetworkCommands
       ["diameter"] = pipe.InnerDiameterOrWidth,
       ["slope"] = pipe.Slope,
       ["material"] = pipe.Material,
-      ["centerlineStartElevation"] = pipe.StartPoint.Z,
-      ["centerlineEndElevation"] = pipe.EndPoint.Z,
+      // Where the pipe actually is, not only how deep it is. A caller checking a
+      // new route against existing infrastructure needs the plan geometry, and
+      // without it the only way to place an existing pipe is to infer it from the
+      // structures somebody named in a sentence. It is also the only way to tell
+      // apart pipes that Civil 3D named from its own counter: the endpoints match
+      // the structures they run between.
+      ["startPoint"] = CivilObjectUtils.ToPointData(pipe.StartPoint),
+      ["endPoint"] = CivilObjectUtils.ToPointData(pipe.EndPoint),
       ["invertIn"] = null,
       ["invertOut"] = null,
-      ["invertNote"] = "The Civil 3D 2026 managed Pipe API does not expose endpoint invert elevations directly; centerline elevations are returned instead.",
+      ["invertNote"] = "The Civil 3D 2026 managed Pipe API does not expose endpoint invert elevations directly; each endpoint's z is its centerline elevation instead.",
     };
   }
 

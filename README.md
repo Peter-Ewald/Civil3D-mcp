@@ -646,7 +646,7 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 | Tool | Description |
 |------|-------------|
 | `civil3d_pipe_catalog` | Lists available pipe parts lists and part names |
-| `civil3d_pipe_network` | Reads pipe network data: networks, pipes, structures |
+| `civil3d_pipe_network` | Reads pipe network data: networks, pipes, structures. Pipes and structures report their own plan geometry, so an existing network can be checked against a proposed one without a follow-up call per object |
 | `civil3d_pipe_network_edit` | Creates and modifies pipe networks, pipes, and structures |
 
 </details>
