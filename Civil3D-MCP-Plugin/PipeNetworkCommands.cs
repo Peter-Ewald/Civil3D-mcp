@@ -255,10 +255,17 @@ public static class PipeNetworkCommands
         ? FindStructureByName(network, transaction, endStructureName!, OpenMode.ForRead).ObjectId
         : ObjectId.Null;
 
-      var startPoint = ReadPoint(parameters, "startPoint");
-      var endPoint = ReadPoint(parameters, "endPoint");
-      var createdPipeId = AddPipeToNetwork(network, transaction, partName, diameter, startPoint, endPoint, startStructureId, endStructureId);
+      RefuseRetiredParameter(parameters, "startPoint", "startInvert");
+      RefuseRetiredParameter(parameters, "endPoint", "endInvert");
+
+      var startInvert = ReadPoint(parameters, "startInvert");
+      var endInvert = ReadPoint(parameters, "endInvert");
+      var createdPipeId = AddPipeToNetwork(network, transaction, partName, diameter, startInvert, endInvert, startStructureId, endStructureId);
       var pipe = CivilObjectUtils.GetRequiredObject<Pipe>(transaction, createdPipeId, OpenMode.ForWrite);
+      // Last, and the order is the point. The part's real bore is only known once
+      // the pipe exists, and connecting to a structure can move an end, so
+      // converting any earlier would be undone without a word.
+      ApplyInvertElevations(pipe, startInvert, endInvert);
       CivilObjectUtils.ApplyColorIndex(pipe, colorIndex);
       ApplyLayer(pipe, layerName, database, transaction);
 
@@ -271,6 +278,68 @@ public static class PipeNetworkCommands
         ["layer"] = pipe.Layer,
       };
     });
+  }
+
+  /// <summary>
+  /// Lowers the pipe's ends from the centreline elevations Civil 3D stores to sit
+  /// on the inverts a caller asked for.
+  ///
+  /// A gravity design is solved in inverts. The bottom of the bore is what has to
+  /// clear a duct, what has to keep cover under a road, and what has to arrive
+  /// above the pipe it discharges into. Civil 3D's <c>Pipe.StartPoint</c> and
+  /// <c>EndPoint</c> are the centre of the bore instead, half a diameter higher,
+  /// and nothing in the API converts between them: a gravity pipe exposes no
+  /// invert elevation at all, under any of the property names this library probed
+  /// for.
+  ///
+  /// So writing an invert straight into an endpoint buries the pipe half a
+  /// diameter too deep and reports success. On this drawing's 75 mm part that is
+  /// 37.5 mm, small enough that every number still looks plausible and no check
+  /// anywhere catches it. This is the one place the two datums meet, on the way
+  /// in, and <see cref="ToPipeData"/> is the one place they meet on the way out.
+  /// </summary>
+  private static void ApplyInvertElevations(Pipe pipe, Point3d? startInvert, Point3d? endInvert)
+  {
+    var halfBore = pipe.InnerDiameterOrWidth / 2.0;
+
+    // The plan position is read back off the pipe rather than taken from the
+    // caller's point, so a structure this end is connected to keeps deciding
+    // where the end is. Only the elevation is being set here.
+    if (startInvert.HasValue)
+    {
+      var start = pipe.StartPoint;
+      pipe.StartPoint = new Point3d(start.X, start.Y, startInvert.Value.Z + halfBore);
+    }
+
+    if (endInvert.HasValue)
+    {
+      var end = pipe.EndPoint;
+      pipe.EndPoint = new Point3d(end.X, end.Y, endInvert.Value.Z + halfBore);
+    }
+  }
+
+  /// <summary>
+  /// Refuses a parameter whose meaning has changed, naming what replaced it.
+  ///
+  /// Refused rather than reinterpreted, because the change is a datum and not a
+  /// spelling: the retired names carried a centreline elevation and their
+  /// replacements carry an invert. A caller still sending the old name means it
+  /// still holds the old assumption, and quietly accepting it would produce a
+  /// pipe half a diameter out of place with nothing failing. This is the same
+  /// choice the Layer 1 contract made when it put an <c>_m</c> suffix on its
+  /// diameter fields.
+  /// </summary>
+  private static void RefuseRetiredParameter(JsonObject? parameters, string retired, string replacement)
+  {
+    if (parameters?[retired] == null)
+    {
+      return;
+    }
+
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.INVALID_INPUT",
+      $"'{retired}' is no longer accepted: its z was a pipe centreline elevation. Use '{replacement}', whose z is the invert, "
+        + "which is the elevation a gravity design is solved in. The two differ by half the pipe's diameter.");
   }
 
   /// <summary>
@@ -295,6 +364,122 @@ public static class PipeNetworkCommands
     }
 
     part.LayerId = LookupUtils.EnsureLayerId(database, transaction, layerName!);
+  }
+
+  /// <summary>
+  /// Moves an existing structure vertically, leaving where it stands in plan
+  /// alone.
+  ///
+  /// This and <see cref="SetPipeEndElevationsAsync"/> are the only way anything
+  /// here can change a network part that already exists: every other write in
+  /// this file adds one. A design that has to follow a road downwards needs
+  /// exactly this, and without it a recomputed profile can be produced and never
+  /// applied.
+  ///
+  /// In place rather than erase and recreate. The object handle, any labels
+  /// attached to it and the pipe connections Civil 3D holds all survive, which is
+  /// what lets a network that has been recomputed still be read back as its own
+  /// record. Recreating it would hand back a different object every cycle.
+  ///
+  /// Both elevations are optional and at least one is required, so a caller that
+  /// only needs to move the sump does not have to restate a rim it read a moment
+  /// ago and risk writing a stale one back.
+  /// </summary>
+  public static Task<object?> SetStructureElevationsAsync(JsonObject? parameters)
+  {
+    var networkName = PluginRuntime.GetRequiredString(parameters, "networkName");
+    var structureName = PluginRuntime.GetRequiredString(parameters, "structureName");
+    var rimElevation = PluginRuntime.GetOptionalDouble(parameters, "rimElevation");
+    var sumpElevation = PluginRuntime.GetOptionalDouble(parameters, "sumpElevation");
+
+    if (!rimElevation.HasValue && !sumpElevation.HasValue)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.INVALID_INPUT",
+        "Either 'rimElevation' or 'sumpElevation' is required: this was asked to move a structure and given nowhere to move it to.");
+    }
+
+    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var network = FindPipeNetworkByName(civilDoc, transaction, networkName, OpenMode.ForWrite);
+      var structure = FindStructureByName(network, transaction, structureName, OpenMode.ForWrite);
+
+      if (rimElevation.HasValue)
+      {
+        structure.RimElevation = rimElevation.Value;
+      }
+
+      if (sumpElevation.HasValue)
+      {
+        structure.SumpElevation = sumpElevation.Value;
+      }
+
+      // Read back off the object rather than echoed from the request, because a
+      // structure's sump is derived from what connects to it: an assignment
+      // Civil 3D declines to keep has to show up as a number that did not change,
+      // not as the number that was asked for.
+      return new Dictionary<string, object?>
+      {
+        ["networkName"] = networkName,
+        ["structure"] = ToStructureData(structure, transaction),
+      };
+    });
+  }
+
+  /// <summary>
+  /// Moves an existing pipe's ends vertically, leaving its plan geometry alone.
+  /// Civil 3D recomputes the length and the slope from the result.
+  ///
+  /// In place for the reasons given on <see cref="SetStructureElevationsAsync"/>.
+  ///
+  /// Elevations are inverts, matching addPipeToNetwork and the network read, so
+  /// nothing on the path from a solved profile to the drawing converts a datum.
+  /// See <see cref="ApplyInvertElevations"/> for why that matters.
+  /// </summary>
+  public static Task<object?> SetPipeEndElevationsAsync(JsonObject? parameters)
+  {
+    var networkName = PluginRuntime.GetRequiredString(parameters, "networkName");
+    var pipeName = PluginRuntime.GetRequiredString(parameters, "pipeName");
+    var startInvert = PluginRuntime.GetOptionalDouble(parameters, "startInvert");
+    var endInvert = PluginRuntime.GetOptionalDouble(parameters, "endInvert");
+
+    if (!startInvert.HasValue && !endInvert.HasValue)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.INVALID_INPUT",
+        "Either 'startInvert' or 'endInvert' is required: this was asked to move a pipe end and given nowhere to move it to.");
+    }
+
+    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var network = FindPipeNetworkByName(civilDoc, transaction, networkName, OpenMode.ForWrite);
+      var pipe = FindPipeByName(network, transaction, pipeName, OpenMode.ForWrite);
+      var halfBore = pipe.InnerDiameterOrWidth / 2.0;
+
+      // Assigned as whole points. Point3d is a value type, so setting the Z of
+      // the one a getter returned would change a copy and write nothing at all,
+      // with no error to say so.
+      if (startInvert.HasValue)
+      {
+        var start = pipe.StartPoint;
+        pipe.StartPoint = new Point3d(start.X, start.Y, startInvert.Value + halfBore);
+      }
+
+      if (endInvert.HasValue)
+      {
+        var end = pipe.EndPoint;
+        pipe.EndPoint = new Point3d(end.X, end.Y, endInvert.Value + halfBore);
+      }
+
+      // The whole pipe read back, which is also how a caller sees whether the
+      // structures at either end are still connected: `startStructure` and
+      // `endStructure` come back null if moving an end detached it.
+      return new Dictionary<string, object?>
+      {
+        ["networkName"] = networkName,
+        ["pipe"] = ToPipeData(pipe, transaction),
+      };
+    });
   }
 
   public static Task<object?> ResizePipeInNetworkAsync(JsonObject? parameters)
@@ -558,10 +743,23 @@ public static class PipeNetworkCommands
 
   private static Dictionary<string, object?> ToPipeData(Pipe pipe, Transaction transaction)
   {
+    // Derived, because Civil 3D does not expose it. A gravity pipe was probed on a
+    // live 2026 drawing for StartInvertElevation, InvertIn and StartInnerElevation
+    // and answered none of them, so the endpoints are all there is and they are
+    // centrelines. Converting here rather than leaving it to every caller is what
+    // keeps this library answering in the datum a gravity design is solved in,
+    // and it is the outbound half of the pair with ApplyInvertElevations.
+    var halfBore = pipe.InnerDiameterOrWidth / 2.0;
+
     return new Dictionary<string, object?>
     {
       ["name"] = pipe.Name,
       ["handle"] = CivilObjectUtils.GetHandle(pipe),
+      // Which layer this pipe is on, so a caller can tell what it drew itself
+      // from what it was given. Answering that from the drawing rather than from
+      // a record of the conversation is what lets a later session, or nobody at
+      // all, work out which parts it may change.
+      ["layer"] = pipe.Layer,
       ["startStructure"] = ResolveObjectName(transaction, pipe.StartStructureId),
       ["endStructure"] = ResolveObjectName(transaction, pipe.EndStructureId),
       ["length"] = pipe.Length3D,
@@ -576,9 +774,9 @@ public static class PipeNetworkCommands
       // the structures they run between.
       ["startPoint"] = CivilObjectUtils.ToPointData(pipe.StartPoint),
       ["endPoint"] = CivilObjectUtils.ToPointData(pipe.EndPoint),
-      ["invertIn"] = null,
-      ["invertOut"] = null,
-      ["invertNote"] = "The Civil 3D 2026 managed Pipe API does not expose endpoint invert elevations directly; each endpoint's z is its centerline elevation instead.",
+      ["invertIn"] = pipe.StartPoint.Z - halfBore,
+      ["invertOut"] = pipe.EndPoint.Z - halfBore,
+      ["elevationNote"] = "startPoint.z and endPoint.z are centreline elevations, as Civil 3D stores them. invertIn and invertOut are the same ends as inverts, half the bore lower, which is what a gravity design is solved in.",
     };
   }
 
@@ -592,6 +790,8 @@ public static class PipeNetworkCommands
     {
       ["name"] = structure.Name,
       ["handle"] = CivilObjectUtils.GetHandle(structure),
+      // As on a pipe, and for the same reason.
+      ["layer"] = structure.Layer,
       ["type"] = structure.PartType.ToString(),
       ["rimElevation"] = structure.RimElevation,
       ["sumpElevation"] = structure.SumpElevation,
