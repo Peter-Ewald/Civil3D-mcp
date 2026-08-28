@@ -958,7 +958,13 @@ Returns detailed properties of a single structure.
 
 #### `check_interference`
 
-Runs an interference check between a pipe network and other objects.
+**Not implemented. Refuses with `CIVIL3D.NOT_IMPLEMENTED`.** It used to resolve the two named objects and then
+answer `interferences: []` and `totalConflicts: 0` whatever the drawing held, which reads as a design with no
+clashes and is the one answer that makes a caller stop looking for one. Run Civil 3D's own Interference Check
+from the Analyze tab instead. Implementing it means `Network.CreateInterferenceCheck` with an
+`InterferenceCriteria` carrying the 3D proximity distance, and reading back the pairs of parts it names.
+
+The parameters and the response shape below describe what it is meant to answer, not what it answers today.
 
 | Parameter   | Type                               | Required | Description                     |
 | ----------- | ---------------------------------- | -------- | ------------------------------- |

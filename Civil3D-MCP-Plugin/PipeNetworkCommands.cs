@@ -107,34 +107,30 @@ public static class PipeNetworkCommands
     });
   }
 
+  /// <summary>
+  /// Refuses, because this command does not check anything yet.
+  ///
+  /// It used to resolve the two objects by name and then answer
+  /// <c>interferences: []</c> and <c>totalConflicts: 0</c> whatever the drawing
+  /// held. Nothing about that answer says it was never computed, so a caller
+  /// asking whether a design clashes was told it does not, and a clash is exactly
+  /// what such a caller stops looking for once it hears no. Refusing is the
+  /// smaller failure: a caller that cannot get an answer can say so, and a person
+  /// can run Autodesk's own Interference Check instead.
+  ///
+  /// Doing it properly means <c>Network.CreateInterferenceCheck</c> with an
+  /// <c>InterferenceCriteria</c> carrying the 3D proximity distance, and reading
+  /// the resulting interferences back as the pairs of parts they name. That is
+  /// real work and it is not done.
+  /// </summary>
   public static Task<object?> CheckPipeNetworkInterferenceAsync(JsonObject? parameters)
   {
-    var networkName = PluginRuntime.GetRequiredString(parameters, "networkName");
-    var targetType = PluginRuntime.GetRequiredString(parameters, "targetType");
-    var targetName = PluginRuntime.GetRequiredString(parameters, "targetName");
-
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      _ = FindPipeNetworkByName(civilDoc, transaction, networkName, OpenMode.ForRead);
-      if (string.Equals(targetType, "surface", StringComparison.OrdinalIgnoreCase))
-      {
-        _ = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, targetName, OpenMode.ForRead);
-      }
-      else if (string.Equals(targetType, "pipe_network", StringComparison.OrdinalIgnoreCase))
-      {
-        _ = FindPipeNetworkByName(civilDoc, transaction, targetName, OpenMode.ForRead);
-      }
-      else
-      {
-        throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Unsupported targetType '{targetType}'.");
-      }
-
-      return new Dictionary<string, object?>
-      {
-        ["interferences"] = Array.Empty<object>(),
-        ["totalConflicts"] = 0,
-      };
-    });
+    _ = parameters;
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.NOT_IMPLEMENTED",
+      "checkPipeNetworkInterference does not run an interference check. It is declared so that the gap is "
+      + "visible, and it refuses rather than answering zero conflicts, which is what it used to do regardless "
+      + "of what the drawing held. Ask a person to run Interference Check from Civil 3D's Analyze tab.");
   }
 
   public static Task<object?> CreatePipeNetworkAsync(JsonObject? parameters)
@@ -414,10 +410,15 @@ public static class PipeNetworkCommands
         structure.SumpElevation = sumpElevation.Value;
       }
 
-      // Read back off the object rather than echoed from the request, because a
-      // structure's sump is derived from what connects to it: an assignment
-      // Civil 3D declines to keep has to show up as a number that did not change,
-      // not as the number that was asked for.
+      // Read back off the object rather than echoed from the request, so an
+      // assignment Civil 3D declines to keep shows up as a number that did not
+      // change rather than as the number that was asked for.
+      //
+      // This read is inside the same transaction as the assignment, so a property
+      // Civil 3D derives on commit is not final here. A live write of a sump to
+      // 98.219 answered with the 98.825 it replaced, and the drawing held 98.219
+      // the moment the command returned. A caller deciding whether a write took
+      // has to read the part back afterwards, through a call of its own.
       return new Dictionary<string, object?>
       {
         ["networkName"] = networkName,
