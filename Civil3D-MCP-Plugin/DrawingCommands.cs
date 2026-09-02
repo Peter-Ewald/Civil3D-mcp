@@ -188,13 +188,112 @@ public static class DrawingCommands
     return Task.FromResult<object?>(BuildCivilObjectTypes());
   }
 
+  /// <summary>
+  /// The Civil 3D objects a caller means, either the ones it names by handle or
+  /// whatever the drawing's pickfirst set holds.
+  /// </summary>
+  /// <remarks>
+  /// The handles exist because reading the pickfirst set from here cannot work
+  /// when a selection was made by a person. Every call arrives inside a command
+  /// context, and AutoCAD hands the pickfirst set to the command that starts and
+  /// clears it, so <c>SelectImplied</c> answers with nothing by the time this
+  /// runs. A caller that can take the selection earlier, as a hosting plugin with
+  /// its own window can, passes what it took.
+  ///
+  /// The fallback stays for the caller that has no such window: a request arriving
+  /// over this library's own listener has nothing to capture with, and reading the
+  /// pickfirst set is then the only reading available, whatever it answers.
+  ///
+  /// <c>handles</c> present but empty is an answer and not an omission: it means
+  /// the caller looked and the selection was empty. Absent means nobody looked.
+  /// </remarks>
   public static Task<object?> GetSelectedCivilObjectsInfoAsync(JsonObject? parameters)
   {
     var limit = PluginRuntime.GetOptionalInt(parameters, "limit") ?? 100;
+    var handles = Handles(parameters);
 
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
-      BuildSelectedCivilObjects(doc, transaction, limit));
+      handles == null
+        ? BuildSelectedCivilObjects(doc, transaction, limit)
+        : BuildNamedCivilObjects(database, transaction, handles, limit));
   }
+
+  /// <summary>
+  /// The handles a caller supplied, or null when it supplied none. An entry that
+  /// is not a string is ignored rather than refused, since one unreadable entry
+  /// says nothing about the rest.
+  /// </summary>
+  private static List<string>? Handles(JsonObject? parameters)
+  {
+    if (parameters?["handles"] is not JsonArray supplied)
+    {
+      return null;
+    }
+
+    return supplied
+      .OfType<JsonValue>()
+      .Select(entry => entry.TryGetValue<string>(out var handle) ? handle : null)
+      .Where(handle => !string.IsNullOrWhiteSpace(handle))
+      .Select(handle => handle!)
+      .ToList();
+  }
+
+  /// <summary>
+  /// The objects behind a list of handles.
+  ///
+  /// A handle that no longer resolves is reported as itself rather than dropped.
+  /// A caller told about two objects when it named three would conclude the third
+  /// was never selected, where the truth is that it has since been erased, and
+  /// those two facts lead somewhere different.
+  /// </summary>
+  private static List<Dictionary<string, object?>> BuildNamedCivilObjects(
+    Database database,
+    Transaction transaction,
+    List<string> handles,
+    int limit)
+  {
+    var result = new List<Dictionary<string, object?>>();
+
+    foreach (var handle in handles.Take(limit))
+    {
+      ObjectId objectId;
+      try
+      {
+        objectId = database.GetObjectId(false, new Handle(Convert.ToInt64(handle, 16)), 0);
+      }
+      catch (System.Exception)
+      {
+        result.Add(Unresolved(handle, "this handle is not one this drawing holds"));
+        continue;
+      }
+
+      if (objectId.IsNull || objectId.IsErased)
+      {
+        result.Add(Unresolved(handle, "the object behind this handle has been erased"));
+        continue;
+      }
+
+      var dbObject = transaction.GetObject(objectId, OpenMode.ForRead);
+      result.Add(new Dictionary<string, object?>
+      {
+        ["handle"] = handle,
+        ["objectType"] = dbObject.GetType().Name,
+        ["name"] = CivilObjectUtils.GetName(dbObject),
+        ["description"] = CivilObjectUtils.GetStringProperty(dbObject, "Description"),
+      });
+    }
+
+    return result;
+  }
+
+  private static Dictionary<string, object?> Unresolved(string handle, string why) =>
+    new()
+    {
+      ["handle"] = handle,
+      ["objectType"] = null,
+      ["name"] = null,
+      ["description"] = why,
+    };
 
   private static Dictionary<string, object?> BuildDrawingInfo(
     Document doc,
