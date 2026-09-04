@@ -16,6 +16,26 @@ public sealed record PluginStatus(
   string? CurrentStage,
   long? CurrentStageDurationMs);
 
+/// <summary>
+/// How long one completed host operation took, and where the time went inside
+/// it.
+///
+/// The same figures <see cref="CivilExecution"/> already writes to the log, made
+/// available to whoever asked for the operation. A caller waiting on a Civil 3D
+/// call cannot otherwise tell a queue it was stuck behind from a document lock it
+/// could not get from an action that was genuinely slow, and those have nothing
+/// in common but their duration.
+///
+/// The stages arrive already written out rather than as the list they were
+/// collected in. That list is appended to from Civil 3D's user interface thread
+/// while the caller waits on another, so handing it over would be handing over
+/// something still being written.
+/// </summary>
+/// <param name="Operation">The dispatch method this operation ran for.</param>
+/// <param name="TotalMs">How long the whole operation took, including the wait for the host gate.</param>
+/// <param name="Stages">The per stage breakdown, as <c>stage=Nms</c> separated by spaces.</param>
+public readonly record struct HostOperationTiming(string Operation, long TotalMs, string Stages);
+
 public sealed class JsonRpcDispatchException : Exception
 {
   public JsonRpcDispatchException(string code, string message) : base(message)
@@ -37,6 +57,22 @@ public static class PluginRuntime
   private static readonly AsyncLocal<string?> CurrentRequestId = new();
   private static readonly AsyncLocal<CancellationToken> CurrentRequestCancellation = new();
   private static readonly AsyncLocal<string?> CurrentExpectedDrawingIdentity = new();
+
+  /// <summary>
+  /// Where a completed host operation's timings go, for the request that asked
+  /// for it. Null for every request that did not ask, which is all of them by
+  /// default.
+  ///
+  /// Set and restored with the rest of the request context rather than only
+  /// where an observer is supplied, and that is what keeps it correct. Some
+  /// commands start work with <c>Task.Run</c> and answer with a job id
+  /// immediately; that work inherits the execution context and would otherwise
+  /// still be reporting to a caller that finished with it minutes earlier. Its
+  /// own request context sets this back to null, so the case is closed by how
+  /// the context is scoped rather than by which commands happen to do it.
+  /// </summary>
+  private static readonly AsyncLocal<Action<HostOperationTiming>?> CurrentRequestTimings = new();
+
   private const int MaxQueuedHostOperations = 64;
   private static int _queueDepth;
   private static int _activeOperations;
@@ -221,16 +257,23 @@ public static class PluginRuntime
   /// incoming RPC request gets - so the drawing-identity check applies to a
   /// caller in the same process exactly as it does to a remote one.
   /// </summary>
+  /// <param name="observeTiming">
+  /// Told how long each host operation this request runs took, and where the
+  /// time went inside it. Null for a caller that does not care, which leaves the
+  /// timings in the log exactly as they were.
+  /// </param>
   public static Task<T> RunInProcessRequestAsync<T>(
     string operation,
     CancellationToken cancellationToken,
-    Func<Task<T>> action) =>
+    Func<Task<T>> action,
+    Action<HostOperationTiming>? observeTiming = null) =>
     RunWithRequestContextAsync(
       operation,
       $"in-process:{Interlocked.Increment(ref _inProcessRequestCount)}",
       cancellationToken,
       GetActiveDrawingIdentity(),
-      action);
+      action,
+      observeTiming);
 
   internal static CancellationToken GetCurrentRequestCancellationToken() => CurrentRequestCancellation.Value;
 
@@ -238,7 +281,13 @@ public static class PluginRuntime
 
   internal static string? GetCurrentRequestId() => CurrentRequestId.Value;
 
-  internal static string? GetActiveDrawingIdentity()
+  /// <summary>
+  /// Which drawing is live right now. Public because the plugin beside this
+  /// library reports it alongside a tool call, and reading the document name
+  /// there instead would be a second copy of the rule below that could drift
+  /// from this one.
+  /// </summary>
+  public static string? GetActiveDrawingIdentity()
   {
     var document = App.DocumentManager.MdiActiveDocument;
     return GetDrawingIdentity(document);
@@ -268,16 +317,19 @@ public static class PluginRuntime
     string requestId,
     CancellationToken cancellationToken,
     string? expectedDrawingIdentity,
-    Func<Task<T>> action)
+    Func<Task<T>> action,
+    Action<HostOperationTiming>? observeTiming = null)
   {
     var previousOperation = CurrentRequestOperation.Value;
     var previousRequestId = CurrentRequestId.Value;
     var previousCancellation = CurrentRequestCancellation.Value;
     var previousExpectedDrawingIdentity = CurrentExpectedDrawingIdentity.Value;
+    var previousTimings = CurrentRequestTimings.Value;
     CurrentRequestOperation.Value = operation;
     CurrentRequestId.Value = requestId;
     CurrentRequestCancellation.Value = cancellationToken;
     CurrentExpectedDrawingIdentity.Value = expectedDrawingIdentity;
+    CurrentRequestTimings.Value = observeTiming;
     try
     {
       return await action();
@@ -356,6 +408,33 @@ public static class PluginRuntime
   internal static void ClearOperationStage()
   {
     Volatile.Write(ref _currentStage, null);
+  }
+
+  /// <summary>
+  /// Hands a finished operation's timings to whoever asked for this request, and
+  /// to nobody otherwise.
+  ///
+  /// Guarded, because this is called from the finally block that unwinds a host
+  /// operation. An observer that threw there would replace whatever exception is
+  /// already on its way out with one about reporting, which is the least useful
+  /// error available and would hide the real one.
+  /// </summary>
+  internal static void PublishOperationTiming(HostOperationTiming timing)
+  {
+    var observe = CurrentRequestTimings.Value;
+    if (observe == null)
+    {
+      return;
+    }
+
+    try
+    {
+      observe(timing);
+    }
+    catch (Exception ex)
+    {
+      PluginLog.Warn("CivilExecution", $"Could not report timings for '{timing.Operation}': {ex.Message}");
+    }
   }
 
   public static object? GetParameter(JsonObject? parameters, string name)

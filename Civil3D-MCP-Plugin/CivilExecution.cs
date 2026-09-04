@@ -201,7 +201,15 @@ public static class CivilExecution
       // Reported after the command context has unwound, never from inside it:
       // PluginLog writes to disk synchronously on the calling thread, and the
       // callback above runs on Civil 3D's UI thread.
-      trace.Report(operation);
+      //
+      // This is also the only point where the same figures can be handed to the
+      // caller. It is a continuation of the flow that awaited this operation, so
+      // the request context is present here, which it is not inside the command
+      // context Civil 3D invokes from its own command loop.
+      if (trace.Report(operation) is { } timing)
+      {
+        PluginRuntime.PublishOperationTiming(timing);
+      }
     }
   }
 
@@ -238,11 +246,15 @@ public static class CivilExecution
       }
     }
 
-    public void Report(string operation)
+    /// <summary>
+    /// Writes the breakdown to the log and hands the same figures back, or null
+    /// when there is nothing to report.
+    /// </summary>
+    public HostOperationTiming? Report(string operation)
     {
       if (_stages.Count == 0)
       {
-        return;
+        return null;
       }
 
       var totalMs = _elapsed.ElapsedMilliseconds;
@@ -263,6 +275,11 @@ public static class CivilExecution
         // visible at the default log level, not only when debug is enabled.
         PluginLog.Warn("CivilExecution", $"Slow Civil 3D host operation: {message}");
       }
+
+      // The written out breakdown, not the list it came from: that list is
+      // appended to from the UI thread and handing it over would be handing over
+      // something still being written.
+      return new HostOperationTiming(operation, totalMs, breakdown);
     }
   }
 }
