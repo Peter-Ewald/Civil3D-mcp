@@ -765,6 +765,11 @@ public static class PipeNetworkCommands
       ["endStructure"] = ResolveObjectName(transaction, pipe.EndStructureId),
       ["length"] = pipe.Length3D,
       ["diameter"] = pipe.InnerDiameterOrWidth,
+      // The bore above, and the outside here, which is what cover to the crown
+      // and a clearance between two pipes are measured to. Without it a caller
+      // computing either has to guess the wall. Read by name, as the cover check
+      // reads it, so a version of the API without it answers null.
+      ["outsideDiameter"] = CivilObjectUtils.GetDoubleProperty(pipe, "OuterDiameterOrWidth"),
       ["slope"] = pipe.Slope,
       ["material"] = pipe.Material,
       // Where the pipe actually is, not only how deep it is. A caller checking a
