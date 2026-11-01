@@ -542,6 +542,9 @@ public static class PipeNetworkCommands
           // unaffected.
           ["pipeParts"] = EnumerateSelectablePartNames(partsList, transaction, DomainType.Pipe),
           ["structureParts"] = EnumerateSelectablePartNames(partsList, transaction, DomainType.Structure),
+          // Each pipe size with its bore, wall, outside diameter and material, so
+          // a caller choosing a size does not have to guess them from its name.
+          ["pipeSizes"] = DescribePipeSizes(partsList, transaction),
         })
         .ToList();
 
@@ -772,6 +775,10 @@ public static class PipeNetworkCommands
       ["outsideDiameter"] = CivilObjectUtils.GetDoubleProperty(pipe, "OuterDiameterOrWidth"),
       ["slope"] = pipe.Slope,
       ["material"] = pipe.Material,
+      // What the pipe was drawn from, so a reader can tell the material its size
+      // states from the material that was asked for when it was drawn.
+      ["partFamily"] = pipe.PartFamilyName,
+      ["partSize"] = pipe.PartSizeName,
       // Where the pipe actually is, not only how deep it is. A caller checking a
       // new route against existing infrastructure needs the plan geometry, and
       // without it the only way to place an existing pipe is to infer it from the
@@ -1124,6 +1131,124 @@ public static class PipeNetworkCommands
     }
 
     return names.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
+  }
+
+  /// <summary>
+  /// Every pipe size in a parts list with the figures its size record states: the
+  /// bore (or width and height for a non-circular size), the wall, the outside
+  /// diameter and the material, all in metres. A caller choosing a size needs its
+  /// bore, and needs the material the parts list states for it, which can
+  /// contradict the size's name: Autodesk's metric template states Reinforced
+  /// Concrete for every pipe size, its 75 mm PVC Pipe included. The outside
+  /// diameter is only worked out when both bore and wall are stated, because a
+  /// wall that is guessed would put the crown in the wrong place; a figure in a
+  /// unit that is not recognised is left null rather than read as metres.
+  /// </summary>
+  private static List<Dictionary<string, object?>> DescribePipeSizes(object partsListObject, Transaction transaction)
+  {
+    var sizes = new List<Dictionary<string, object?>>();
+    if (partsListObject is not PartsList partsList)
+    {
+      return sizes;
+    }
+
+    foreach (ObjectId familyId in partsList.GetPartFamilyIdsByDomain(DomainType.Pipe))
+    {
+      if (transaction.GetObject(familyId, OpenMode.ForRead) is not PartFamily family)
+      {
+        continue;
+      }
+
+      for (var index = 0; index < family.PartSizeCount; index++)
+      {
+        if (transaction.GetObject(family[index], OpenMode.ForRead) is not PartSize size)
+        {
+          continue;
+        }
+
+        var sizeName = CivilObjectUtils.GetName(size) ?? CivilObjectUtils.GetStringProperty(size, "Description");
+        if (string.IsNullOrWhiteSpace(sizeName))
+        {
+          continue;
+        }
+
+        double? innerDiameter = null;
+        double? innerWidth = null;
+        double? innerHeight = null;
+        double? wall = null;
+        string? material = null;
+        foreach (var field in size.SizeDataRecord.GetAllDataFields())
+        {
+          switch (field.ContextString)
+          {
+            case "PipeInnerDiameter":
+              innerDiameter = ToMetres(field.Value, field.Units);
+              break;
+            case "PipeInnerWidth":
+              innerWidth = ToMetres(field.Value, field.Units);
+              break;
+            case "PipeInnerHeight":
+              innerHeight = ToMetres(field.Value, field.Units);
+              break;
+            case "WallThickness":
+              wall = ToMetres(field.Value, field.Units);
+              break;
+            case "Material_Type":
+              var text = Convert.ToString(field.Value, System.Globalization.CultureInfo.InvariantCulture);
+              material = string.IsNullOrWhiteSpace(text) ? null : text;
+              break;
+          }
+        }
+
+        var entry = new Dictionary<string, object?>
+        {
+          ["name"] = sizeName,
+          ["family"] = family.Name,
+        };
+        if (innerDiameter.HasValue)
+        {
+          entry["innerDiameter"] = innerDiameter;
+        }
+
+        if (innerWidth.HasValue && innerHeight.HasValue)
+        {
+          entry["innerWidth"] = innerWidth;
+          entry["innerHeight"] = innerHeight;
+        }
+
+        entry["wallThickness"] = wall;
+        entry["outsideDiameter"] = innerDiameter.HasValue && wall.HasValue
+          ? Math.Round(innerDiameter.Value + 2 * wall.Value, 3)
+          : null;
+        entry["material"] = material;
+        sizes.Add(entry);
+      }
+    }
+
+    return sizes.OrderBy(entry => (string)entry["name"]!, StringComparer.OrdinalIgnoreCase).ToList();
+  }
+
+  private static double? ToMetres(object? value, string? units)
+  {
+    var factor = units?.Trim().ToLowerInvariant() switch
+    {
+      "mm" => 0.001,
+      "cm" => 0.01,
+      "m" => 1.0,
+      "in" => 0.0254,
+      "ft" => 0.3048,
+      _ => (double?)null,
+    };
+    if (factor is null || value is null)
+    {
+      return null;
+    }
+
+    var parsed = value is IConvertible
+      && double.TryParse(Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var number)
+        ? (double?)number
+        : null;
+    return parsed.HasValue ? Math.Round(parsed.Value * factor.Value, 3) : null;
   }
 
   private static IEnumerable<string> EnumeratePartNames(object partsListObject, Transaction transaction)
